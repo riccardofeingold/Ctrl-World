@@ -4,7 +4,7 @@ import random
 import warnings
 import traceback
 import argparse
-from omegaconf import OmegaConf
+# from omegaconf import OmegaConf
 from tqdm import tqdm
 from torchvision import transforms as T
 import torch

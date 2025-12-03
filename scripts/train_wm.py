@@ -116,6 +116,7 @@ def main(args):
                 optimizer.step()
                 optimizer.zero_grad()
                 forward_step += 1
+            print("Forward step:", forward_step, "Loss:", avg_loss.item())
             
             if accelerator.sync_gradients:
                 progress_bar.update(1)
@@ -244,9 +245,9 @@ if __name__ == "__main__":
     # reset parameters with command line
     from argparse import ArgumentParser
     parser = ArgumentParser()
-    parser.add_argument('--svd_model_path', type=str, default=None)
-    parser.add_argument('--clip_model_path', type=str, default=None)
-    parser.add_argument('--ckpt_path', type=str, default=None)
+    parser.add_argument('--svd_model_path', type=str, default="stabilityai/stable-video-diffusion-img2vid")
+    parser.add_argument('--clip_model_path', type=str, default="openai/clip-vit-base-patch32")
+    parser.add_argument('--ckpt_path', type=str, default="checkpoints/droid/checkpoint-10000.pt")
     parser.add_argument('--dataset_root_path', type=str, default=None)
     parser.add_argument('--dataset_meta_info_path', type=str, default=None)
     # dataset_names

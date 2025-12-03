@@ -47,7 +47,7 @@ class wm_args:
     validation_steps = 2500
     max_grad_norm = 1.0
     # for val
-    video_num= 10
+    video_num= 1
 
     ############################ model args ##############################
 
