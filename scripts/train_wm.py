@@ -116,7 +116,6 @@ def main(args):
                 optimizer.step()
                 optimizer.zero_grad()
                 forward_step += 1
-            print("Forward step:", forward_step, "Loss:", avg_loss.item())
             
             if accelerator.sync_gradients:
                 progress_bar.update(1)
