@@ -12,3 +12,8 @@ synthetic_traj*
 dataset_example/droid_subset/annotation/val_old*
 .vscode/*
 *.pt
+*.mp4
+*.pt
+*.json
+orca_dataset/*
+lerobot_dataset/*

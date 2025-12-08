@@ -21,7 +21,7 @@ import wandb
 import swanlab
 import mediapy
 from models.ctrl_world import CrtlWorld
-from config import wm_args
+from config import wm_orca_args
 import math
 
 
@@ -65,7 +65,7 @@ def main(args):
         print(f"Number of parameters in the action_encoder: {num_params/1000000:.2f}M")
 
     # train and val datasets
-    from dataset.dataset_droid_exp33 import Dataset_mix
+    from dataset.dataset_orca import Dataset_mix
     train_dataset = Dataset_mix(args,mode='train')
     val_dataset = Dataset_mix(args,mode='val')
     train_dataloader = torch.utils.data.DataLoader(
@@ -168,7 +168,7 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
     his_latent_gt, future_latent_ft = video_gt[:,:args.num_history], video_gt[:,args.num_history:]
     current_latent = future_latent_ft[:,0]
     print("image",current_latent.shape, 'action', actions.shape)
-    assert current_latent.shape[1:] == (4, 72, 40)
+    assert current_latent.shape[1:] == (4, 96, 32)
     assert actions.shape[1:] == (int(args.num_frames+args.num_history), args.action_dim)
 
     # start generate
@@ -246,13 +246,14 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument('--svd_model_path', type=str, default="stabilityai/stable-video-diffusion-img2vid")
     parser.add_argument('--clip_model_path', type=str, default="openai/clip-vit-base-patch32")
-    parser.add_argument('--ckpt_path', type=str, default="checkpoints/droid/checkpoint-10000.pt")
+    # parser.add_argument('--ckpt_path', type=str, default="checkpoints/droid/checkpoint-10000.pt")
+    parser.add_argument('--ckpt_path', type=str, default=None)
     parser.add_argument('--dataset_root_path', type=str, default=None)
     parser.add_argument('--dataset_meta_info_path', type=str, default=None)
     # dataset_names
     parser.add_argument('--dataset_names', type=str, default=None)
     args_new = parser.parse_args()
-    args = wm_args()
+    args = wm_orca_args()
 
     def merge_args(args, new_args):
         for k, v in new_args.__dict__.items():
