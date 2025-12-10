@@ -70,7 +70,7 @@ def main(args):
     from dataset.dataset_orca import Dataset_mix
     train_dataset = Dataset_mix(args,mode='train')
     print(f"Number of training samples: {len(train_dataset)}")
-    val_dataset = Dataset_mix(args,mode='train')
+    val_dataset = Dataset_mix(args,mode='val')
     print(f"Number of validation samples: {len(val_dataset)}")
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset, 
