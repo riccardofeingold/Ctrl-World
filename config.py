@@ -25,7 +25,7 @@ class wm_orca_args:
     annotation_name='annotation' #'annotation_all_skip1'
     num_workers=4
     max_num_samples = 13000
-    down_sample=1 # Set to 1 if you already downsampled the states with the video together when computing the latent using the extract_latent_orca
+    down_sample=9 # NOTE: is the same value used to skip rgb frames in extract_latent_orca. Only the states are already downsampled during the extract_latent_orca process
     skip_step = 1 # defines how many past frames we skip => defines what is put into history
 
     # conditional

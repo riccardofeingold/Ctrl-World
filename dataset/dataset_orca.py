@@ -148,8 +148,9 @@ class Dataset_mix(Dataset):
         with open(ann_file, "r") as f:
             label = json.load(f)
             
-        # NOTE: The data is already processed such that the states length correspond to the video length when running the extract_latent_orca script
-        frame_len = len(label['observation.state.joint_position'])-1
+        # since we downsample the video from 45hz to 5 hz to save the storage space, the frame id is 1/9 of the state id
+        joint_len = len(label['observation.state.joint_position'])-1
+        frame_len = np.floor(joint_len / self.args.down_sample)
         skip = random.randint(1, 2)
         skip_his = int(skip*4)
         p = random.random()

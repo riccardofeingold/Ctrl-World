@@ -110,8 +110,8 @@ class EncodeLatentDataset(Dataset):
         # record cartesain aligned with video frames
         cartesian_pose = np.array(traj_info['observation.state.cartesian_position'])
         cartesian_hand_joint = np.array(traj_info['observation.state.hand_joint_position'])
-        # print(cartesian_pose.shape, cartesian_hand_joint.shape)
         cartesian_states = np.concatenate((cartesian_pose, cartesian_hand_joint),axis=-1)[::rgb_skip].tolist()
+        assert len(cartesian_states) == len(frames), f"Length mismatch: {len(cartesian_states)} vs {len(frames)}"  
         
         info = {
             "texts": [instruction],
