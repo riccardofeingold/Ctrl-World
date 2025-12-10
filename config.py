@@ -9,12 +9,14 @@ class wm_orca_args:
     # model paths
     svd_model_path = "stabilityai/stable-video-diffusion-img2vid"
     clip_model_path = "openai/clip-vit-base-patch32"
-    ckpt_path = "/data/Ctrl-World/model_ckpt/orca_dataset/checkpoint-20000.pt"
+    # ckpt_path = "/data/Ctrl-World/model_ckpt/orca_dataset/checkpoint-20000.pt"
+    ckpt_path = None
     pi_ckpt = '/cephfs/shared/llm/openpi/openpi-assets-preview/checkpoints/pi05_droid'
 
     # dataset parameters
     # raw data
     dataset_root_path = "dataset_example"
+    # NOTE: you can combine multiple datasets by using '+' to separate them
     dataset_names = 'orca_dataset'
     # meta info
     dataset_meta_info_path = 'dataset_meta_info' #'/cephfs/cjyyj/code/video_evaluation/exp_cfg'#'dataset_meta_info'
@@ -22,9 +24,12 @@ class wm_orca_args:
     prob=[1.0]
     annotation_name='annotation' #'annotation_all_skip1'
     num_workers=4
-    down_sample=3 # downsample 15hz to 5hz
-    skip_step = 1
-    
+    max_num_samples = 13000
+    down_sample=1 # Set to 1 if you already downsampled the states with the video together when computing the latent using the extract_latent_orca
+    skip_step = 1 # defines how many past frames we skip => defines what is put into history
+
+    # conditional
+    num_views = 1   # number of camera views used during training
 
     # logs parameters
     debug = False
@@ -41,28 +46,31 @@ class wm_orca_args:
     train_batch_size = 4
     shuffle = True
     num_train_epochs = 100
-    max_train_steps = 500000
-    checkpointing_steps = 20000
+    max_train_steps = 100010
+    checkpointing_steps = 10000
     validation_steps = 2500
     max_grad_norm = 1.0
     # for val
-    video_num= 1
+    video_num= 4
+    num_validation_batch = 2
 
     ############################ model args ##############################
 
     # model parameters
+    # defines how much motion there is in the videos: Value between 0 to 255
+    # the motion bucket id to use for the generated video. This can be used to control the motion of the generated video. Increasing the motion bucket id increases the motion of the generated video.
     motion_bucket_id = 127
-    fps = 7
+    fps = 5
     guidance_scale = 2 #7.5 #7.5 #7.5 #3.0
     num_inference_steps = 50
-    decode_chunk_size = 7
+    decode_chunk_size = 5
     width = 256
     height = 256
     # num history and num future predictions
     num_frames= 5
-    num_history = 6
+    num_history = 5
     action_dim = 23 # 6 for cartesian pos + 17 for hand joint pos
-    text_cond = True
+    text_cond = False
     frame_level_cond = True
     his_cond_zero = False
     dtype = torch.bfloat16 # [torch.float32, torch.bfloat16] # during inference, we can use bfloat16 to accelerate the inference speed and save memory

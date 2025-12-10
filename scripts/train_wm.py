@@ -18,7 +18,6 @@ from tqdm.auto import tqdm
 import json
 from decord import VideoReader, cpu
 import wandb
-import swanlab
 import mediapy
 from models.ctrl_world import CrtlWorld
 from config import wm_orca_args
@@ -27,7 +26,8 @@ import math
 
 def main(args):
     logger = get_logger(__name__, log_level="INFO")
-    swanlab.sync_wandb()
+    
+    # allows you to log when using multiple GPUs
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -35,7 +35,7 @@ def main(args):
         project_dir=args.output_dir
     )
 
-    # model and optimizer
+    # Loading model checkpoint if one is given otherwise initialize a new model
     model = CrtlWorld(args)
     if args.ckpt_path is not None:
         print(f"Loading checkpoint from {args.ckpt_path}!")
@@ -43,9 +43,11 @@ def main(args):
         model.load_state_dict(state_dict, strict=True)
     model.to(accelerator.device)
     model.train()
+
+    # using AdamW as optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
 
-    # logs
+    # Showing a few intersting stats about the model that we're about to train
     if accelerator.is_main_process:
         now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
         tag = args.tag
@@ -64,10 +66,12 @@ def main(args):
         num_params = sum(p.numel() for p in model.action_encoder.parameters())
         print(f"Number of parameters in the action_encoder: {num_params/1000000:.2f}M")
 
-    # train and val datasets
+    # Loading both the train and validation dataset
     from dataset.dataset_orca import Dataset_mix
     train_dataset = Dataset_mix(args,mode='train')
-    val_dataset = Dataset_mix(args,mode='val')
+    print(f"Number of training samples: {len(train_dataset)}")
+    val_dataset = Dataset_mix(args,mode='train')
+    print(f"Number of validation samples: {len(val_dataset)}")
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset, 
         batch_size=args.train_batch_size,
@@ -80,11 +84,13 @@ def main(args):
     )
 
     # Prepare everything with our accelerator
+    # does the GPU distribution
     model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader, val_dataloader
     )
    
     ############################ training ##############################
+    # printing training information
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
     num_train_epochs = math.ceil(args.max_train_steps * args.gradient_accumulation_steps*total_batch_size / len(train_dataloader))
     logger.info("***** Running training *****")
@@ -96,46 +102,77 @@ def main(args):
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     logger.info(f"  checkpointing_steps = {args.checkpointing_steps}")
     logger.info(f"  validation_steps = {args.validation_steps}")
-    global_step = 0
-    forward_step=0
-    train_loss = 0.0
+
+
+    # Initialize training counters
+    global_step = 0  # Counts optimizer steps (after gradient accumulation)
+    forward_step = 0  # Counts forward passes (can be multiple per optimizer step)
+    train_loss = 0.0  # Accumulates loss for logging
+    # Create progress bar (only on main process to avoid duplicates)
     progress_bar = tqdm(range(global_step, args.max_train_steps), disable=not accelerator.is_local_main_process)
     progress_bar.set_description("Steps")
 
+    # Main training loop over epochs
     for epoch in range(num_train_epochs):
+        # Iterate through batches in the training dataloader
         for step, batch in enumerate(train_dataloader):
+            # Context manager handles gradient accumulation logic
             with accelerator.accumulate(model):
+                # Enable automatic mixed precision (fp16/bf16) for faster training
                 with accelerator.autocast():
+                    # Forward pass: compute loss
                     loss_gen, _ = model(batch)
+                # Gather losses from all GPUs and compute mean for logging
                 avg_loss = accelerator.gather(loss_gen.repeat(args.train_batch_size)).mean()
+                # Accumulate loss (divide by grad accum steps for correct averaging)
                 train_loss += avg_loss.item()/ args.gradient_accumulation_steps
+                # Backward pass: compute gradients (handles multi-GPU synchronization)
                 accelerator.backward(loss_gen)
+                # Get model parameters for gradient clipping
                 params_to_clip = model.parameters()
+                # Check if gradients should be synchronized (true after gradient_accumulation_steps)
                 if accelerator.sync_gradients:
+                    # Clip gradients to prevent exploding gradients
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                # Update model weights
                 optimizer.step()
+                # Clear gradients for next iteration
                 optimizer.zero_grad()
+                # Increment forward pass counter
                 forward_step += 1
-            
+
+            # LOGGING 
+            # Only execute when gradients have been synchronized (i.e., actual optimizer step)
             if accelerator.sync_gradients:
+                # Update progress bar
                 progress_bar.update(1)
+                # Increment global step counter
                 global_step += 1
-                # log loss every 100 steps
+                # Log average loss every 100 steps
                 if global_step %100 == 0:
+                    # Update progress bar display with current loss
                     progress_bar.set_postfix({"loss": train_loss})
+                    # Log to wandb
                     accelerator.log({"train_loss": train_loss/100}, step=global_step)
+                    # Reset accumulated loss
                     train_loss = 0.0
-                # save ckpt every checkpointing_steps
+                # Save model checkpoint at specified intervals (only on main process)
                 if global_step % args.checkpointing_steps == 0 and accelerator.is_main_process:
+                    # Create checkpoint save path
                     save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}.pt")
+                    # Unwrap model from DDP wrapper and save state dict
                     torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
                     logger.info(f"Saved checkpoint to {save_path}")
-                # generate video every validation_steps
+                # Generate validation videos at specified intervals (only on main process)
                 if global_step % args.validation_steps == 5 and accelerator.is_main_process:
+                    # Switch to evaluation mode (disables dropout, etc.)
                     model.eval()
+                    # Use autocast for inference
                     with accelerator.autocast():
+                        # Generate multiple validation videos
                         for id in range(args.video_num):
                             validate_video_generation(model, val_dataset, args,global_step, args.output_dir, id, accelerator)
+                    # Switch back to training mode
                     model.train()
 
 
@@ -156,10 +193,11 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
     device = accelerator.device
     pipeline = model.module.pipeline if accelerator.num_processes > 1 else model.pipeline
     videos_row = args.video_num if not args.debug else 1
-    videos_col = 2
+    videos_col = args.num_validation_batch
 
     # sample from val dataset
     batch_id = list(range(0,len(val_dataset),int(len(val_dataset)/videos_row/videos_col)))
+    print(f"batch_id: {batch_id}")
     batch_id = batch_id[int(id*(videos_col)):int((id+1)*(videos_col))]
     batch_list = [val_dataset.__getitem__(id) for id in batch_id]
     video_gt = torch.cat([t['latent'].unsqueeze(0) for i,t in enumerate(batch_list)],dim=0).to(device, non_blocking=True)
@@ -168,7 +206,12 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
     his_latent_gt, future_latent_ft = video_gt[:,:args.num_history], video_gt[:,args.num_history:]
     current_latent = future_latent_ft[:,0]
     print("image",current_latent.shape, 'action', actions.shape)
-    assert current_latent.shape[1:] == (4, 96, 32)
+    if args.num_views == 1:
+        assert  current_latent.shape[1:] == (4, 32, 32)
+    elif args.num_views == 2:
+        assert current_latent.shape[1:] == (4, 64, 32)
+    else:
+        assert current_latent.shape[1:] == (4, 96, 32)
     assert actions.shape[1:] == (int(args.num_frames+args.num_history), args.action_dim)
 
     # start generate
@@ -182,7 +225,7 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
             image=current_latent,
             text=action_latent,
             width=args.width,
-            height=int(3*args.height),
+            height=int(args.num_views*args.height),
             num_frames=args.num_frames,
             history=his_latent_gt,
             num_inference_steps=args.num_inference_steps,
@@ -197,9 +240,9 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
             his_cond_zero=args.his_cond_zero,
         )
     
-    pred_latents = einops.rearrange(pred_latents, 'b f c (m h) (n w) -> (b m n) f c h w', m=3,n=1) # (B, 8, 4, 32,32)
+    pred_latents = einops.rearrange(pred_latents, 'b f c (m h) (n w) -> (b m n) f c h w', m=args.num_views,n=1) # (B, 8, 4, 32,32)
     video_gt = torch.cat([his_latent_gt, future_latent_ft], dim=1) # (B, 8, 4, 32,32)
-    video_gt = einops.rearrange(video_gt, 'b f c (m h) (n w) -> (b m n) f c h w', m=3,n=1) # (B, 8, 4, 32,32)
+    video_gt = einops.rearrange(video_gt, 'b f c (m h) (n w) -> (b m n) f c h w', m=args.num_views, n=1) # (B, 8, 4, 32,32)
     
     # decode latent
     if video_gt.shape[2] != 3:  
@@ -229,14 +272,114 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
     video_gt = video_gt.to(pipeline.unet.dtype).detach().cpu().numpy().transpose(0,1,3,4,2).astype(np.uint8)
     videos = ((videos / 2.0 + 0.5).clamp(0, 1)*255)
     videos = videos.to(pipeline.unet.dtype).detach().cpu().numpy().transpose(0,1,3,4,2).astype(np.uint8) #(2,16,256,256,3)
+    
+    # Compute multiple metrics between predicted and ground truth frames (before concatenation)
+    # Only compare future frames (skip history frames)
+    gt_frames_only = video_gt[:, args.num_history:]  # Corresponding ground truth frames
+    
+    metrics = compute_video_metrics(videos, gt_frames_only)
+    
+    # Log metrics to wandb
+    accelerator.log({
+        f"val_psnr_{id}": metrics['psnr'],
+        f"val_ssim_{id}": metrics['ssim'],
+        f"val_mse_{id}": metrics['mse'],
+        f"val_mae_{id}": metrics['mae'],
+        f"val_lpips_{id}": metrics['lpips'],
+    }, step=train_steps)
+    
+    print(f"Video Metrics - PSNR: {metrics['psnr']:.2f}, SSIM: {metrics['ssim']:.4f}, "
+          f"MSE: {metrics['mse']:.2f}, MAE: {metrics['mae']:.2f}, LPIPS: {metrics['lpips']:.4f}")
+    
     videos = np.concatenate([video_gt[:, :args.num_history],videos],axis=1) #(2,16,512,256,3)
     videos = np.concatenate([video_gt,videos],axis=-3) #(2,16,512,256,3)
     videos = np.concatenate([video for video in videos],axis=-2).astype(np.uint8) # (16,512,256*batch,3)
-    
+
+    # save and upload these videos to wandb
     os.makedirs(f"{videos_dir}/samples", exist_ok=True)
     filename = f"{videos_dir}/samples/train_steps_{train_steps}_{id}.mp4"
     mediapy.write_video(filename, videos, fps=2)
+    
+    # Upload video to wandb using accelerator
+    accelerator.log({
+        f"video_{id}": wandb.Video(filename, fps=2, format="mp4")
+    }, step=train_steps)
+    
     return 
+
+
+def compute_video_metrics(pred_frames, gt_frames):
+    """
+    Compute multiple metrics to evaluate predicted video quality against ground truth.
+    
+    Args:
+        pred_frames: (B, T, H, W, 3) predicted frames in range [0, 255], uint8
+        gt_frames: (B, T, H, W, 3) ground truth frames in range [0, 255], uint8
+    
+    Returns:
+        dict with metrics: psnr, ssim, mse, mae, lpips
+    """
+    from skimage.metrics import structural_similarity as ssim
+    from skimage.metrics import peak_signal_noise_ratio as psnr
+    
+    # Flatten batch and time dimensions
+    pred_flat = pred_frames.reshape(-1, *pred_frames.shape[2:])  # (B*T, H, W, 3)
+    gt_flat = gt_frames.reshape(-1, *gt_frames.shape[2:])  # (B*T, H, W, 3)
+    
+    # Convert to float for calculations
+    pred_float = pred_flat.astype(np.float32)
+    gt_float = gt_flat.astype(np.float32)
+    
+    # 1. MSE (Mean Squared Error) - lower is better
+    mse = np.mean((pred_float - gt_float) ** 2)
+    
+    # 2. MAE (Mean Absolute Error) - lower is better
+    mae = np.mean(np.abs(pred_float - gt_float))
+    
+    # 3. PSNR (Peak Signal-to-Noise Ratio) - higher is better
+    psnr_values = []
+    for i in range(len(pred_flat)):
+        psnr_val = psnr(gt_flat[i], pred_flat[i], data_range=255)
+        psnr_values.append(psnr_val)
+    avg_psnr = np.mean(psnr_values)
+    
+    # 4. SSIM (Structural Similarity Index) - higher is better (range [0,1])
+    ssim_values = []
+    for i in range(len(pred_flat)):
+        ssim_val = ssim(gt_flat[i], pred_flat[i], channel_axis=2, data_range=255)
+        ssim_values.append(ssim_val)
+    avg_ssim = np.mean(ssim_values)
+    
+    # 5. LPIPS (Learned Perceptual Image Patch Similarity) - lower is better
+    # This requires a pre-trained network, so we'll use a simplified version
+    # For full LPIPS, you'd need: import lpips; lpips_fn = lpips.LPIPS(net='alex')
+    try:
+        import lpips
+        import torch
+        lpips_fn = lpips.LPIPS(net='alex').cuda() if torch.cuda.is_available() else lpips.LPIPS(net='alex')
+        
+        # Convert to torch tensors in range [-1, 1] with shape (N, 3, H, W)
+        pred_torch = torch.from_numpy(pred_float / 127.5 - 1.0).permute(0, 3, 1, 2).float()
+        gt_torch = torch.from_numpy(gt_float / 127.5 - 1.0).permute(0, 3, 1, 2).float()
+        
+        if torch.cuda.is_available():
+            pred_torch = pred_torch.cuda()
+            gt_torch = gt_torch.cuda()
+        
+        with torch.no_grad():
+            lpips_values = lpips_fn(pred_torch, gt_torch)
+        avg_lpips = lpips_values.mean().item()
+    except:
+        # Fallback if lpips not available
+        avg_lpips = 0.0
+    
+    return {
+        'mse': mse,
+        'mae': mae,
+        'psnr': avg_psnr,
+        'ssim': avg_ssim,
+        'lpips': avg_lpips,
+    }
 
 
 

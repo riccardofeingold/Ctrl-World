@@ -56,6 +56,8 @@ class Dataset_mix(Dataset):
                 samples = json.load(f)
             dataset_path = [os.path.join(dataset_root_path, dataset_name) for sample in samples]
             print(f"ALL dataset, {len(samples)} samples in total")
+            ids = np.random.choice(len(samples), args.max_num_samples, replace=False)
+            samples = np.array(samples)[ids].tolist()
             self.dataset_path_all.append(dataset_path)
             self.samples_all.append(samples)
             self.samples_len.append(len(samples))
@@ -129,7 +131,7 @@ class Dataset_mix(Dataset):
         rdata = (data - clip_min) / clip_range * (data_max - data_min) + data_min
         return rdata
 
-    def __getitem__(self, index):
+    def __getitem__(self, index, return_frame_ids=False):
 
         # first sample the dataset id, than sample the data from the dataset
         dataset_id = np.random.choice(len(self.samples_all), p=self.prob)
@@ -146,9 +148,8 @@ class Dataset_mix(Dataset):
         with open(ann_file, "r") as f:
             label = json.load(f)
             
-        # since we downsample the video from 15hz to 5 hz to save the storage space, the frame id is 1/3 of the state id
-        joint_len = len(label['observation.state.joint_position'])-1
-        frame_len = np.floor(joint_len / 3)
+        # NOTE: The data is already processed such that the states length correspond to the video length when running the extract_latent_orca script
+        frame_len = len(label['observation.state.joint_position'])-1
         skip = random.randint(1, 2)
         skip_his = int(skip*4)
         p = random.random()
@@ -158,12 +159,18 @@ class Dataset_mix(Dataset):
         # rgb_id and state_id
         frame_now = frame_ids[0]
         rgb_id = []
+        # getting the history rgb ids
+        # using the max method to prevent negative values which would take future frames into frames
         for i in range(self.args.num_history,0,-1):
             rgb_id.append(int(frame_now - i*skip_his))
         rgb_id.append(frame_now)
+
+        # getting the future rgb ids
+        # the skip ensure temporal robustness => temporal augmentation
         for i in range(1, self.args.num_frames):
             rgb_id.append(int(frame_now + i*skip))
         rgb_id = np.array(rgb_id)
+        # ensuring we have no negative indices
         rgb_id = np.clip(rgb_id, 0, frame_len).tolist()
         rgb_id = [int(frame_id) for frame_id in rgb_id]
         state_id = np.array(rgb_id)*self.args.down_sample
@@ -176,17 +183,32 @@ class Dataset_mix(Dataset):
         data['text'] = label['texts'][0]
 
         # stack tokens of multi-view
-        cond_cam_id1 = 0
-        cond_cam_id2 = 1
-        cond_cam_id3 = 2
-        latnt_cond1,_ = self._get_obs(label, rgb_id, cond_cam_id1, pre_encode=True, video_dir=dataset_dir)
-        latnt_cond2,_ = self._get_obs(label, rgb_id, cond_cam_id2, pre_encode=True, video_dir=dataset_dir)
-        latnt_cond3,_ = self._get_obs(label, rgb_id, cond_cam_id3, pre_encode=True, video_dir=dataset_dir)
-        latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 96, 32), dtype=torch.float32)
-        latent[:,:,0:32] =  latnt_cond1
-        latent[:,:,32:64] = latnt_cond2
-        latent[:,:,64:96] = latnt_cond3
-        data['latent'] = latent.float()
+        # NOTE: Here we can easily define more or less views for condition
+        if self.args.num_views == 1:
+            cond_cam_id = np.random.randint(0, 1)
+            latnt_cond,_ = self._get_obs(label, rgb_id, cond_cam_id, pre_encode=True, video_dir=dataset_dir)
+            data['latent'] = latnt_cond.float()
+        elif self.args.num_views == 2:
+            cond_cam_id1 = np.random.randint(0, 1)
+            cond_cam_id2 = 2 # wrist view
+            latnt_cond1,_ = self._get_obs(label, rgb_id, cond_cam_id1, pre_encode=True, video_dir=dataset_dir)
+            latnt_cond2,_ = self._get_obs(label, rgb_id, cond_cam_id2, pre_encode=True, video_dir=dataset_dir)
+            latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 64, 32), dtype=torch.float32)
+            latent[:,:,0:32] =  latnt_cond1
+            latent[:,:,32:64] = latnt_cond2
+            data['latent'] = latent.float()
+        elif self.args.num_views == 3:
+            cond_cam_id1 = 0
+            cond_cam_id2 = 1
+            cond_cam_id3 = 2
+            latnt_cond1,_ = self._get_obs(label, rgb_id, cond_cam_id1, pre_encode=True, video_dir=dataset_dir)
+            latnt_cond2,_ = self._get_obs(label, rgb_id, cond_cam_id2, pre_encode=True, video_dir=dataset_dir)
+            latnt_cond3,_ = self._get_obs(label, rgb_id, cond_cam_id3, pre_encode=True, video_dir=dataset_dir)
+            latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 96, 32), dtype=torch.float32)
+            latent[:,:,0:32] =  latnt_cond1
+            latent[:,:,32:64] = latnt_cond2
+            latent[:,:,64:96] = latnt_cond3
+            data['latent'] = latent.float()
 
         # prepare action cond data
         cartesian_pose = np.array(label['observation.state.cartesian_position'])[state_id]
@@ -195,6 +217,8 @@ class Dataset_mix(Dataset):
         action = self.normalize_bound(action, state_p01, state_p99)
         data['action'] = torch.tensor(action).float()
 
+        if return_frame_ids:
+            return data, frame_ids
         return data
         
 

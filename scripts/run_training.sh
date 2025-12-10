@@ -1,1 +1,2 @@
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 WANDB_MODE=online accelerate launch --main_process_port 29501 scripts/train_wm.py --dataset_root_path dataset_example --dataset_meta_info_path dataset_meta_info
+export HF_HOME=/data/huggingface
+CUDA_VISIBLE_DEVICES=3,4,5,6,7 WANDB_MODE=online accelerate launch --main_process_port 29501 scripts/train_wm.py --dataset_root_path dataset_example --dataset_meta_info_path dataset_meta_info

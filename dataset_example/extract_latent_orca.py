@@ -22,8 +22,8 @@ class EncodeLatentDataset(Dataset):
         self.vae = AutoencoderKLTemporalDecoder.from_pretrained(svd_path, subfolder="vae").to(device)
 
         annotation_files = [
-            old_path + "/annotations/" + f for f in os.listdir(old_path + '/annotations') 
-            if os.path.isfile(os.path.join(old_path + '/annotations', f))
+            old_path + "/annotation/" + f for f in os.listdir(old_path + '/annotation') 
+            if os.path.isfile(os.path.join(old_path + '/annotation', f))
         ]
 
         # randomize order of annotation files
