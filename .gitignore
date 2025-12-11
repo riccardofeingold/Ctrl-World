@@ -17,3 +17,4 @@ dataset_example/droid_subset/annotation/val_old*
 *.json
 orca_dataset/*
 lerobot_dataset/*
+*.egg-info/*

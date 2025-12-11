@@ -1,0 +1,20 @@
+# Include documentation and license
+include readme.md
+include LICENSE.txt
+include requirements.txt
+
+# Include configuration files
+include config.py
+
+# Exclude unnecessary files and directories
+recursive-exclude __pycache__ *
+recursive-exclude *.pyc *
+recursive-exclude .git *
+exclude .gitignore
+recursive-exclude swanlog *
+recursive-exclude wandb *
+recursive-exclude output *
+recursive-exclude synthetic_traj *
+recursive-exclude checkpoints *
+recursive-exclude model_ckpt *
+recursive-exclude datasets *
