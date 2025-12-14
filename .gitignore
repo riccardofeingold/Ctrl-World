@@ -18,3 +18,4 @@ dataset_example/droid_subset/annotation/val_old*
 orca_dataset/*
 lerobot_dataset/*
 *.egg-info/*
+*_analysis/*

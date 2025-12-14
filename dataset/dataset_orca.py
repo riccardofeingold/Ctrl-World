@@ -47,17 +47,20 @@ class Dataset_mix(Dataset):
         dataset_root_path = args.dataset_root_path
         dataset_names = args.dataset_names.split('+')
         dataset_meta_info_path = args.dataset_meta_info_path
-        dataset_cfgs = args.dataset_cfgs.split('+')
         self.prob = args.prob
-        for dataset_name, dataset_cfg in zip(dataset_names, dataset_cfgs):
-            data_json_path = f'{dataset_meta_info_path}/{dataset_cfg}/{mode}_sample.json'
+        for dataset_name in dataset_names:
+            data_json_path = f'{dataset_meta_info_path}/{dataset_name}/{mode}_sample.json'
+            print(data_json_path)
      
             with open(data_json_path, "r") as f:
                 samples = json.load(f)
             dataset_path = [os.path.join(dataset_root_path, dataset_name) for sample in samples]
             print(f"ALL dataset, {len(samples)} samples in total")
-            ids = np.random.choice(len(samples), args.max_num_samples, replace=False)
-            samples = np.array(samples)[ids].tolist()
+            
+            if mode == 'train':
+                ids = np.random.choice(len(samples), args.max_num_samples, replace=False)
+                samples = np.array(samples)[ids].tolist()
+
             self.dataset_path_all.append(dataset_path)
             self.samples_all.append(samples)
             self.samples_len.append(len(samples))

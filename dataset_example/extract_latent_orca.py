@@ -25,8 +25,12 @@ class EncodeLatentDataset(Dataset):
             old_path + "/annotation/" + f for f in os.listdir(old_path + '/annotation') 
             if os.path.isfile(os.path.join(old_path + '/annotation', f))
         ]
+        
+        annotation_files.sort(
+            key=lambda x: int(os.path.splitext(os.path.basename(x))[0])
+        )
 
-        # randomize order of annotation files
+        # # randomize order of annotation files
         np.random.shuffle(annotation_files)
 
         self.data = []
@@ -74,8 +78,8 @@ class EncodeLatentDataset(Dataset):
         # if f"{save_root}/videos/{data_type}/{traj_id}" exist, skip this trajectory
         try:
             self.process_traj(video_paths, traj_info, instruction, self.new_path, traj_id=traj_id, data_type=data_type, size=self.size, rgb_skip=self.skip, device=self.vae.device)
-        except:
-            print(f"Error processing trajectory {traj_id}, skipping...")
+        except Exception as e:
+            print(f"Error processing trajectory {traj_id}, skipping... Error: {e}")
             return 0
     
         return 0

@@ -1,6 +1,6 @@
 #!/bin/bash
 export HF_HOME=/data/huggingface
-export CUDA_VISIBLE_DEVICES=6
+export CUDA_VISIBLE_DEVICES=7
 export WANDB_MODE=online
 
 # Script to run the ORCA dataset processing pipeline
@@ -9,12 +9,16 @@ export WANDB_MODE=online
 set -e  # Exit on any error
 
 # Default arguments (modify these as needed)
-ORCA_DATASET_PATH="${ORCA_DATASET_PATH:-/data/faive_lab/datasets/data_D4}"
+ORCA_DATASET_PATH="${ORCA_DATASET_PATH:-/data/faive_lab/mimicgen_data}"
 ORCA_OUTPUT_PATH="${ORCA_OUTPUT_PATH:-/data/Ctrl-World/datasets}"
 SVD_PATH="${SVD_PATH:-stabilityai/stable-video-diffusion-img2vid}"
-DATASET_NAME="${DATASET_NAME:-orca_D4}"
+DATASET_NAME="${DATASET_NAME:-mimicgen_data}"
 DEBUG_FLAG="${DEBUG_FLAG:-}"
-MAIN_PROCESS_PORT=12348
+MAIN_PROCESS_PORT=12342
+
+# skip flags
+SKIP_EXTRACT_LATENT="${SKIP_EXTRACT_LATENT:-false}"
+SKIP_CREATE_META_INFO="${SKIP_CREATE_META_INFO:-false}"
 
 echo "=========================================="
 echo "ORCA Dataset Processing Pipeline"
@@ -28,39 +32,47 @@ echo "=========================================="
 echo ""
 
 # Step 1: Extract latent representations
-echo "[Step 1/3] Running extract_latent_orca.py..."
-echo "----------------------------------------"
-accelerate launch dataset_example/extract_latent_orca.py \
-    --orca_dataset_path "$ORCA_DATASET_PATH" \
-    --orca_output_path "$ORCA_OUTPUT_PATH/$DATASET_NAME" \
-    --svd_path "$SVD_PATH" \
-    $DEBUG_FLAG
-
-if [ $? -eq 0 ]; then
-    echo "✓ extract_latent_orca.py completed successfully"
+if [ "$SKIP_EXTRACT_LATENT" = "true" ]; then
+    echo "[Step 1/3] Skipping extract_latent_orca.py as per configuration."
 else
-    echo "✗ extract_latent_orca.py failed"
-    exit 1
-fi
+    echo "[Step 1/3] Running extract_latent_orca.py..."
+    echo "----------------------------------------"
+    accelerate launch dataset_example/extract_latent_orca.py \
+        --orca_dataset_path "$ORCA_DATASET_PATH" \
+        --orca_output_path "$ORCA_OUTPUT_PATH/$DATASET_NAME" \
+        --svd_path "$SVD_PATH" \
+        $DEBUG_FLAG
 
-echo ""
+    if [ $? -eq 0 ]; then
+        echo "✓ extract_latent_orca.py completed successfully"
+    else
+        echo "✗ extract_latent_orca.py failed"
+        exit 1
+    fi
+
+    echo ""
+fi
 
 # Step 2: Create meta information
-echo "[Step 2/3] Running create_meta_info_orca.py..."
-echo "----------------------------------------"
-python dataset_meta_info/create_meta_info_orca.py \
-    --orca_output_path "$ORCA_OUTPUT_PATH/$DATASET_NAME" \
-    --dataset_name "$DATASET_NAME" \
-    $DEBUG_FLAG
-
-if [ $? -eq 0 ]; then
-    echo "✓ create_meta_info_orca.py completed successfully"
+if [ "$SKIP_CREATE_META_INFO" = "true" ]; then
+    echo "[Step 2/3] Skipping create_meta_info_orca.py as per configuration."
 else
-    echo "✗ create_meta_info_orca.py failed"
-    exit 1
-fi
+    echo "[Step 2/3] Running create_meta_info_orca.py..."
+    echo "----------------------------------------"
+    python dataset_meta_info/create_meta_info_orca.py \
+        --orca_output_path "$ORCA_OUTPUT_PATH/$DATASET_NAME" \
+        --dataset_name "$DATASET_NAME" \
+        $DEBUG_FLAG
 
-echo ""
+    if [ $? -eq 0 ]; then
+        echo "✓ create_meta_info_orca.py completed successfully"
+    else
+        echo "✗ create_meta_info_orca.py failed"
+        exit 1
+    fi
+
+    echo ""
+fi
 
 # Step 3: Start training with the processed dataset
 echo "[Step 3/3] Running train_wm.py..."
