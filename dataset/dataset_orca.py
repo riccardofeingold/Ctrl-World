@@ -189,7 +189,7 @@ class Dataset_mix(Dataset):
         # stack tokens of multi-view
         # NOTE: Here we can easily define more or less views for condition
         if self.args.num_views == 1:
-            cond_cam_id = np.random.randint(0, 1)
+            cond_cam_id = np.random.randint(0, 1) if self.args.only_wrist_view==False else 2
             latnt_cond,_ = self._get_obs(label, rgb_id, cond_cam_id, pre_encode=True, video_dir=dataset_dir)
             data['latent'] = latnt_cond.float()
         elif self.args.num_views == 2:

@@ -393,6 +393,7 @@ if __name__ == "__main__":
     parser.add_argument('--ckpt_path', type=str, default=None)
     parser.add_argument('--dataset_root_path', type=str, default=None)
     parser.add_argument('--dataset_meta_info_path', type=str, default=None)
+    parser.add_argument('--tag', type=str, default=None)
     # dataset_names
     parser.add_argument('--dataset_names', type=str, default=None)
     args_new = parser.parse_args()
@@ -403,8 +404,9 @@ if __name__ == "__main__":
             if v is not None:
                 args.__dict__[k] = v
         return args
-    
+
     args = merge_args(args, args_new)
+    args.tag = args_new.tag if args_new.tag is not None else args.dataset_names
 
     main(args)
 

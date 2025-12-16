@@ -1,6 +1,6 @@
 #!/bin/bash
 export HF_HOME=/data/huggingface
-export CUDA_VISIBLE_DEVICES=7
+export CUDA_VISIBLE_DEVICES=4
 export WANDB_MODE=online
 
 # Script to run the ORCA dataset processing pipeline
@@ -12,13 +12,14 @@ set -e  # Exit on any error
 ORCA_DATASET_PATH="${ORCA_DATASET_PATH:-/data/faive_lab/mimicgen_data}"
 ORCA_OUTPUT_PATH="${ORCA_OUTPUT_PATH:-/data/Ctrl-World/datasets}"
 SVD_PATH="${SVD_PATH:-stabilityai/stable-video-diffusion-img2vid}"
-DATASET_NAME="${DATASET_NAME:-mimicgen_data}"
+DATASET_NAME="${DATASET_NAME:-orca_D4}"
+WANDB_TAG="${DATASET_NAME}_only_wrist_view"
 DEBUG_FLAG="${DEBUG_FLAG:-}"
-MAIN_PROCESS_PORT=12342
+MAIN_PROCESS_PORT=12340
 
 # skip flags
-SKIP_EXTRACT_LATENT="${SKIP_EXTRACT_LATENT:-false}"
-SKIP_CREATE_META_INFO="${SKIP_CREATE_META_INFO:-false}"
+SKIP_EXTRACT_LATENT="${SKIP_EXTRACT_LATENT:-true}"
+SKIP_CREATE_META_INFO="${SKIP_CREATE_META_INFO:-true}"
 
 echo "=========================================="
 echo "ORCA Dataset Processing Pipeline"
@@ -80,7 +81,8 @@ echo "----------------------------------------"
 accelerate launch --main_process_port $MAIN_PROCESS_PORT scripts/train_wm.py  \
     --dataset_root_path "$ORCA_OUTPUT_PATH" \
     --dataset_meta_info_path "dataset_meta_info" \
-    --dataset_names "$DATASET_NAME"
+    --dataset_names "$DATASET_NAME" \
+    --tag "$WANDB_TAG" 
 
 if [ $? -eq 0 ]; then
     echo "✓ train_wm.py completed successfully"
