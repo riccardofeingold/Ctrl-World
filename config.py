@@ -21,7 +21,7 @@ class wm_orca_args:
     # meta info
     dataset_meta_info_path = 'dataset_meta_info' #'/cephfs/cjyyj/code/video_evaluation/exp_cfg'#'dataset_meta_info'
     dataset_cfgs = dataset_names
-    prob=[0.25, 0.25, 0.25, 0.25]
+    prob=[1.0]
     annotation_name='annotation' #'annotation_all_skip1'
     num_workers=4
     max_num_samples = 13000
@@ -30,6 +30,7 @@ class wm_orca_args:
 
     # conditional
     num_views = 1   # number of camera views used during training
+    only_wrist_view = True
 
     # logs parameters
     debug = False
