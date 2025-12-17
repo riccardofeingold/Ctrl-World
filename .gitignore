@@ -20,3 +20,4 @@ lerobot_dataset/*
 *.egg-info/*
 *_analysis/*
 **/test_example_object_hand_centric
+.env

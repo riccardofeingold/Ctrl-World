@@ -394,6 +394,10 @@ if __name__ == "__main__":
     parser.add_argument('--dataset_root_path', type=str, default=None)
     parser.add_argument('--dataset_meta_info_path', type=str, default=None)
     parser.add_argument('--tag', type=str, default=None)
+    
+    # described how many frames/states to skip
+    parser.add_argument('--fps', type=int, default=1)
+
     # dataset_names
     parser.add_argument('--dataset_names', type=str, default=None)
     args_new = parser.parse_args()
@@ -407,6 +411,7 @@ if __name__ == "__main__":
 
     args = merge_args(args, args_new)
     args.tag = args_new.tag if args_new.tag is not None else args.dataset_names
+    args.down_sample = int(args.original_fps / args_new.fps)
 
     main(args)
 

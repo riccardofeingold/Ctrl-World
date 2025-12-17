@@ -1,5 +1,8 @@
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import mediapy
 import os
+import argparse
 from diffusers.models import AutoencoderKL
 import mediapy
 import torch
@@ -11,6 +14,16 @@ from torch.utils.data import Dataset
 
 import pandas as pd
 from accelerate import Accelerator
+
+
+def parse_tuple(s):
+    """Parse a string representation of a tuple into a tuple of integers."""
+    try:
+        # Remove parentheses and split by comma
+        s = s.strip('()')
+        return tuple(map(int, s.split(',')))
+    except:
+        raise argparse.ArgumentTypeError("Tuple must be in format: (width,height) or width,height")
 
 
 class EncodeLatentDataset(Dataset): 
@@ -147,24 +160,29 @@ class EncodeLatentDataset(Dataset):
 
 
 if __name__ == "__main__":
-
+    from config import wm_orca_args
     from argparse import ArgumentParser
     parser = ArgumentParser()
     parser.add_argument('--orca_dataset_path', type=str, default='/data/Ctrl-World/dataset_example/lerobot_dataset')
     parser.add_argument('--orca_output_path', type=str, default='/data/Ctrl-World/dataset_example/orca_dataset')
     parser.add_argument('--svd_path', type=str, default='stabilityai/stable-video-diffusion-img2vid')
+    parser.add_argument('--fps', type=int, default=5)
+    parser.add_argument('--frame_size', type=parse_tuple, default=(256, 256))
     # debug
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
+    wm_arguments = wm_orca_args()
 
     accelerator = Accelerator()
+    rgb_skip = int(wm_arguments.original_fps / args.fps)
+    print(f"Actual FPS after skipping: {wm_arguments.original_fps / rgb_skip} Hz")
     dataset = EncodeLatentDataset(
         old_path=args.orca_dataset_path,
         new_path= args.orca_output_path,
         svd_path=args.svd_path,
         device=accelerator.device,
-        size=(256, 256),
-        rgb_skip=9, # NOTE: Synthetic data is recorded at 90 fps but the decimation is set to 2 which means the fps is actually 45, we use 5 fps
+        size=args.frame_size,
+        rgb_skip=rgb_skip, # NOTE: Synthetic data is recorded at 45 fps but the decimation is set to 2 which means the fps is actually 45, we use 5 fps
     )
     tmp_data_loader = torch.utils.data.DataLoader(
             dataset,

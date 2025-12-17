@@ -188,18 +188,19 @@ class Dataset_mix(Dataset):
 
         # stack tokens of multi-view
         # NOTE: Here we can easily define more or less views for condition
+        compressed_size = self.args.frame_size[0]//self.args.vae_compression_rate
         if self.args.num_views == 1:
-            cond_cam_id = np.random.randint(0, 1) if self.args.only_wrist_view==False else 2
+            cond_cam_id = 0 if self.args.only_wrist_view==False else 2
             latnt_cond,_ = self._get_obs(label, rgb_id, cond_cam_id, pre_encode=True, video_dir=dataset_dir)
             data['latent'] = latnt_cond.float()
         elif self.args.num_views == 2:
-            cond_cam_id1 = np.random.randint(0, 1)
+            cond_cam_id1 = 0
             cond_cam_id2 = 2 # wrist view
             latnt_cond1,_ = self._get_obs(label, rgb_id, cond_cam_id1, pre_encode=True, video_dir=dataset_dir)
             latnt_cond2,_ = self._get_obs(label, rgb_id, cond_cam_id2, pre_encode=True, video_dir=dataset_dir)
-            latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 64, 32), dtype=torch.float32)
-            latent[:,:,0:32] =  latnt_cond1
-            latent[:,:,32:64] = latnt_cond2
+            latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 2*compressed_size, compressed_size), dtype=torch.float32)
+            latent[:,:,0:compressed_size] =  latnt_cond1
+            latent[:,:,compressed_size:2*compressed_size] = latnt_cond2
             data['latent'] = latent.float()
         elif self.args.num_views == 3:
             cond_cam_id1 = 0
@@ -208,10 +209,10 @@ class Dataset_mix(Dataset):
             latnt_cond1,_ = self._get_obs(label, rgb_id, cond_cam_id1, pre_encode=True, video_dir=dataset_dir)
             latnt_cond2,_ = self._get_obs(label, rgb_id, cond_cam_id2, pre_encode=True, video_dir=dataset_dir)
             latnt_cond3,_ = self._get_obs(label, rgb_id, cond_cam_id3, pre_encode=True, video_dir=dataset_dir)
-            latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 96, 32), dtype=torch.float32)
-            latent[:,:,0:32] =  latnt_cond1
-            latent[:,:,32:64] = latnt_cond2
-            latent[:,:,64:96] = latnt_cond3
+            latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 3*compressed_size, compressed_size), dtype=torch.float32)
+            latent[:,:,0:compressed_size] =  latnt_cond1
+            latent[:,:,compressed_size:2*compressed_size] = latnt_cond2
+            latent[:,:,2*compressed_size:3*compressed_size] = latnt_cond3
             data['latent'] = latent.float()
 
         # prepare action cond data

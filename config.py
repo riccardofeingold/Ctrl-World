@@ -23,14 +23,18 @@ class wm_orca_args:
     dataset_cfgs = dataset_names
     prob=[1.0]
     annotation_name='annotation' #'annotation_all_skip1'
+    original_fps = 45
     num_workers=4
     max_num_samples = 13000
     down_sample=9 # NOTE: is the same value used to skip rgb frames in extract_latent_orca. Only the states are already downsampled during the extract_latent_orca process
     skip_step = 1 # defines how many past frames we skip => defines what is put into history
 
+    # compression rate of VAE
+    vae_compression_rate = 8
+
     # conditional
     num_views = 1   # number of camera views used during training
-    only_wrist_view = True
+    only_wrist_view = False
 
     # logs parameters
     debug = False
