@@ -76,9 +76,9 @@ class EncodeLatentDataset(Dataset):
             action_hand_joint.append(traj_data['action.hand_joint_position'][i])
         success = traj_data['success']
         video_paths = [
-                    f'{self.old_path}/videos/{idx}/0_rgb.mp4',
-                    f'{self.old_path}/videos/{idx}/1_rgb.mp4',
-                    f'{self.old_path}/videos/{idx}/2_rgb.mp4']
+                    f'{self.old_path}/videos/{traj_id}/0_rgb.mp4',
+                    f'{self.old_path}/videos/{traj_id}/1_rgb.mp4',
+                    f'{self.old_path}/videos/{traj_id}/2_rgb.mp4']
         traj_info = {'success': success,
                      'observation.state.cartesian_position': obs_car,
                      'observation.state.joint_position': obs_joint,

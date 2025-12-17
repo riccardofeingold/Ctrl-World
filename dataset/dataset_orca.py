@@ -188,7 +188,7 @@ class Dataset_mix(Dataset):
 
         # stack tokens of multi-view
         # NOTE: Here we can easily define more or less views for condition
-        compressed_size = self.args.frame_size[0]//self.args.vae_compression_rate
+        compressed_size = self.args.width//self.args.vae_compression_rate
         if self.args.num_views == 1:
             cond_cam_id = 0 if self.args.only_wrist_view==False else 2
             latnt_cond,_ = self._get_obs(label, rgb_id, cond_cam_id, pre_encode=True, video_dir=dataset_dir)
