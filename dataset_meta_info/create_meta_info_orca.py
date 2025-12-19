@@ -24,7 +24,7 @@ def load_and_process_ann_file(data_root, ann_file, sequence_interval=1, start_in
         with open(f'{data_root}/{ann_file}', "r") as f:
             ann = json.load(f)
     except:
-        print(f'skip {ann_file}')
+        print(f'skip {ann_file}', flush=True)
         return samples
 
     n_frames = ann['video_length']
@@ -81,7 +81,7 @@ if __name__ == "__main__":
             ann_files = init_anns(data_root, ann_dir)
             ann_files_all.extend(ann_files)
             samples = init_sequences(data_root, ann_files,sequence_interval, start_interval, sequence_length)
-            print(f'{data_root} {len(samples)} samples')
+            print(f'{data_root} {len(samples)} samples', flush=True)
             samples_all.extend(samples)
             
             # calculate the 1% and 99% of the action and state
@@ -100,8 +100,8 @@ if __name__ == "__main__":
             # caculate the 1% and 99% of the action and state
             state_01 = np.percentile(state_all, 1, axis=0)
             state_99 = np.percentile(state_all, 99, axis=0)
-            print('state_01:', state_01)
-            print('state_99:', state_99)
+            print('state_01:', state_01, flush=True)
+            print('state_99:', state_99, flush=True)
             stat = {
                 'state_01': state_01.tolist(),
                 'state_99': state_99.tolist(),
@@ -116,10 +116,10 @@ if __name__ == "__main__":
                 del samples['states']
             import random
             random.shuffle(samples_all)
-            print('step_num',data_type,len(samples_all))
-            print('traj_num',data_type, len(ann_files_all))
+            print('step_num',data_type,len(samples_all), flush=True)
+            print('traj_num',data_type, len(ann_files_all), flush=True)
             with open(f'dataset_meta_info/{dataset_name}/{data_type}_sample.json', 'w') as f:
                 json.dump(samples_all, f, indent=4)
         except Exception as e:
-            print(f"An error occurred while processing {data_type} data: {e}")
+            print(f"An error occurred while processing {data_type} data: {e}", flush=True)
         

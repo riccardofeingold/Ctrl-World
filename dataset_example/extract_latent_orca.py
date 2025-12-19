@@ -195,7 +195,7 @@ if __name__ == "__main__":
         if idx == 5 and args.debug:
             break
         if idx % 100 == 0 and accelerator.is_main_process:
-            print(f"Precomputed {idx} samples")
+            print(f"Precomputed {idx} samples", flush=True)
 
 # accelerate launch dataset_example/extract_latent.py --droid_hf_path /cephfs/shared/droid_hf/droid_1.0.1 --droid_output_path dataset_example/droid_subset --svd_path /cephfs/shared/llm/stable-video-diffusion-img2vid --debug
 
