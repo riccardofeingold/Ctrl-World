@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from einops import rearrange
 from scipy.spatial.transform import Rotation as R  
 import decord
+import torch.nn.functional as F
 
 from config import wm_orca_args
 
@@ -57,7 +58,7 @@ class Dataset_mix(Dataset):
             dataset_path = [os.path.join(dataset_root_path, dataset_name) for sample in samples]
             print(f"ALL dataset, {len(samples)} samples in total")
             
-            if mode == 'train':
+            if mode == 'train' and (len(samples) > args.max_num_samples):
                 ids = np.random.choice(len(samples), args.max_num_samples, replace=False)
                 samples = np.array(samples)[ids].tolist()
 
@@ -100,6 +101,23 @@ class Dataset_mix(Dataset):
                 video_path = video_path.replace("latent_videos", "latent_videos_svd")
                 frames = self._load_latent_video(video_path, frame_ids)
         return frames
+    
+    def _get_hand_mask(self, label, frame_ids, cam_id, pre_encode, video_dir):
+        assert cam_id is not None
+        assert pre_encode == True
+        
+        if pre_encode:
+            mask_video_path = label["latent_segmentation_videos"][cam_id]['latent_video_path']
+            mask_video_path = os.path.join(video_dir,mask_video_path)
+            try:
+                frames = self._load_latent_video(mask_video_path, frame_ids)
+            except Exception as e:
+                print(f"Error loading hand mask video from {mask_video_path}: {e}")
+            
+            frames *= self.args.hand_weight
+        
+        return frames
+
 
     def _get_obs(self, label, frame_ids, cam_id, pre_encode, video_dir):
         if cam_id is None:
@@ -193,6 +211,10 @@ class Dataset_mix(Dataset):
             cond_cam_id = 0 if self.args.only_wrist_view==False else 2
             latnt_cond,_ = self._get_obs(label, rgb_id, cond_cam_id, pre_encode=True, video_dir=dataset_dir)
             data['latent'] = latnt_cond.float()
+
+            if self.args.use_hand_mask:
+                data['hand_mask'] = self._get_hand_mask(label, rgb_id, cond_cam_id, pre_encode=True, video_dir=dataset_dir).float()
+
         elif self.args.num_views == 2:
             cond_cam_id1 = 0
             cond_cam_id2 = 2 # wrist view
@@ -200,8 +222,17 @@ class Dataset_mix(Dataset):
             latnt_cond2,_ = self._get_obs(label, rgb_id, cond_cam_id2, pre_encode=True, video_dir=dataset_dir)
             latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 2*compressed_size, compressed_size), dtype=torch.float32)
             latent[:,:,0:compressed_size] =  latnt_cond1
-            latent[:,:,compressed_size:2*compressed_size] = latnt_cond2
+            latent[:,:,compressed_size:] = latnt_cond2
             data['latent'] = latent.float()
+
+            if self.args.use_hand_mask:
+                latnt_seg1 = self._get_hand_mask(label, rgb_id, cond_cam_id1, pre_encode=True, video_dir=dataset_dir)
+                latnt_seg2 = self._get_hand_mask(label, rgb_id, cond_cam_id2, pre_encode=True, video_dir=dataset_dir)
+                latent_seg = torch.zeros((self.args.num_frames+self.args.num_history, 4, 2*compressed_size, compressed_size), dtype=torch.float32)
+                latent_seg[:,:,0:compressed_size] =  latnt_seg1
+                latent_seg[:,:,compressed_size:] = latnt_seg2
+                data['hand_mask'] = latent_seg.float()
+
         elif self.args.num_views == 3:
             cond_cam_id1 = 0
             cond_cam_id2 = 1
@@ -212,8 +243,18 @@ class Dataset_mix(Dataset):
             latent = torch.zeros((self.args.num_frames+self.args.num_history, 4, 3*compressed_size, compressed_size), dtype=torch.float32)
             latent[:,:,0:compressed_size] =  latnt_cond1
             latent[:,:,compressed_size:2*compressed_size] = latnt_cond2
-            latent[:,:,2*compressed_size:3*compressed_size] = latnt_cond3
+            latent[:,:,2*compressed_size:] = latnt_cond3
             data['latent'] = latent.float()
+
+            if self.args.use_hand_mask:
+                latnt_seg1 = self._get_hand_mask(label, rgb_id, cond_cam_id1, pre_encode=True, video_dir=dataset_dir)
+                latnt_seg2 = self._get_hand_mask(label, rgb_id, cond_cam_id2, pre_encode=True, video_dir=dataset_dir)
+                latnt_seg3 = self._get_hand_mask(label, rgb_id, cond_cam_id3, pre_encode=True, video_dir=dataset_dir)
+                latent_seg = torch.zeros((self.args.num_frames+self.args.num_history, 4, 2*compressed_size, compressed_size), dtype=torch.float32)
+                latent_seg[:,:,0:compressed_size] =  latnt_seg1
+                latent_seg[:,:,compressed_size:2*compressed_size] = latnt_seg2
+                latent_seg[:,:,2*compressed_size:] = latnt_seg3
+                data['hand_mask'] = latent_seg.float()
 
         # prepare action cond data
         cartesian_pose = np.array(label['observation.state.cartesian_position'])[state_id]
@@ -225,10 +266,9 @@ class Dataset_mix(Dataset):
         if return_frame_ids:
             return data, frame_ids
         return data
-        
+
 
 if __name__ == "__main__":
-
     from config import wm_orca_args
     args = wm_orca_args()
     train_dataset = Dataset_mix(args,mode="val")

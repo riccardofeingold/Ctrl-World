@@ -15,13 +15,13 @@ fi
 
 # Default arguments (modify these as needed)
 # Dataset path which is converted from HDF5 file to lerobot format (usually in faive_lab directory)
-ORCA_DATASET_PATH="${ORCA_DATASET_PATH:-/data/faive_lab/datasets/mimicgen_1}"
+ORCA_DATASET_PATH="${ORCA_DATASET_PATH:-/data/faive_lab/datasets/tests}"
 # Where to store the train/val dataset after processing
 ORCA_OUTPUT_PATH="${ORCA_OUTPUT_PATH:-/data/Ctrl-World/datasets}"
 # Which VAE model to use for latent extraction
 SVD_PATH="${SVD_PATH:-stabilityai/stable-video-diffusion-img2vid}"
 # Name of the processed dataset
-DATASET_NAME="${DATASET_NAME:-data_fix_cam_view_far_random}"
+DATASET_NAME="${DATASET_NAME:-test_random_data}"
 
 # Debug flag
 DEBUG_FLAG="${DEBUG_FLAG:-}"
@@ -30,14 +30,14 @@ DEBUG_FLAG="${DEBUG_FLAG:-}"
 MAIN_PROCESS_PORT=$((10000 + RANDOM % 55535))
 
 # Desired FPS for processing
-DESIRED_FPS=5
+DESIRED_FPS=10
 
 # WandB tag for the experiment
-WANDB_TAG="${DATASET_NAME}_fix_cam_sine_${DESIRED_FPS}Hz_one_view}"
+WANDB_TAG="${DATASET_NAME}_${DESIRED_FPS}Hz_one_view}"
 
 # skip flags
 SKIP_EXTRACT_LATENT="${SKIP_EXTRACT_LATENT:-true}"
-SKIP_CREATE_META_INFO="${SKIP_CREATE_META_INFO:-false}"
+SKIP_CREATE_META_INFO="${SKIP_CREATE_META_INFO:-true}"
 SKIP_TRAINING="${SKIP_TRAINING:-false}"
 
 # Function to send Discord notification
@@ -123,7 +123,6 @@ else
         --orca_dataset_path "$ORCA_DATASET_PATH" \
         --orca_output_path "$ORCA_OUTPUT_PATH/$DATASET_NAME" \
         --svd_path "$SVD_PATH" \
-        --fps $DESIRED_FPS \
         --frame_size "(256,256)" \
         $DEBUG_FLAG
 

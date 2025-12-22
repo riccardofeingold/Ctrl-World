@@ -145,6 +145,7 @@ class CrtlWorld(nn.Module):
 
     def forward(self, batch):
         latents = batch['latent'] # (B, 16, 4, 32, 32)
+        latent_hand_masks = batch['hand_mask'] if self.args.use_hand_mask else None
         texts = batch['text']
         dtype = self.unet.dtype
         device = self.unet.device
@@ -206,6 +207,12 @@ class CrtlWorld(nn.Module):
         predict_x0 = c_out * model_pred + c_skip * noisy_latents 
 
         # only calculate loss on future frames
-        loss += ((predict_x0[:,num_history:] - latents[:,num_history:])**2 * loss_weight).mean()
+        pred_difference = predict_x0[:,num_history:] - latents[:,num_history:]
+        if self.args.use_hand_mask:
+            print("pred_difference shape: ", pred_difference.shape)
+            print("latent_hand_masks: ", latent_hand_masks[:, num_history:].shape)
+
+            pred_difference = pred_difference * latent_hand_masks[:, num_history:] * self.args.hand_weight + pred_difference * (1 - latent_hand_masks[:, num_history:])
+        loss += (pred_difference**2 * loss_weight).mean()
 
         return loss, torch.tensor(0.0, device=device,dtype=dtype)

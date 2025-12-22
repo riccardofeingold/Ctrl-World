@@ -21,13 +21,14 @@ class wm_orca_args:
     # meta info
     dataset_meta_info_path = 'dataset_meta_info' #'/cephfs/cjyyj/code/video_evaluation/exp_cfg'#'dataset_meta_info'
     dataset_cfgs = dataset_names
-    prob=[1.0]
+    prob=[1]
     annotation_name='annotation' #'annotation_all_skip1'
-    original_fps = 45
+    original_fps = 50
     num_workers=4
     max_num_samples = 13000
-    down_sample=9 # NOTE: is the same value used to skip rgb frames in extract_latent_orca. Only the states are already downsampled during the extract_latent_orca process
+    down_sample=5 # NOTE: is the same value used to skip rgb frames in extract_latent_orca. Only the states are already downsampled during the extract_latent_orca process
     skip_step = 1 # defines how many past frames we skip => defines what is put into history
+    use_hand_mask = True
 
     # compression rate of VAE
     vae_compression_rate = 8
@@ -45,6 +46,7 @@ class wm_orca_args:
 
 
     # training parameters
+    hand_weight = 2.5
     learning_rate= 1e-5 # 5e-6
     gradient_accumulation_steps = 1
     mixed_precision = 'fp16'
