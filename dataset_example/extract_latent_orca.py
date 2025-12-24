@@ -14,6 +14,26 @@ from torch.utils.data import Dataset
 
 import pandas as pd
 from accelerate import Accelerator
+from dotenv import load_dotenv
+import requests
+import datetime
+
+load_dotenv()
+
+def send_discord_message(message: str):
+    """Sends a message to a Discord channel via a webhook."""
+    # Using an environment variable for the webhook URL is a good practice
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        print("Warning: DISCORD_WEBHOOK_URL environment variable not set. Skipping notification.")
+        return
+
+    data = {"content": message}
+    try:
+        response = requests.post(webhook_url, json=data)
+        response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+    except requests.exceptions.RequestException as e:
+        print(f"Error: Failed to send Discord notification: {e}")
 
 
 def parse_tuple(s):
@@ -27,13 +47,13 @@ def parse_tuple(s):
 
 
 class EncodeLatentDataset(Dataset): 
-    def __init__(self, args, old_path, new_path, svd_path, device, size=(192, 320), rgb_skip=3):
+    def __init__(self, args, old_path, new_path, vae, size=(192, 320), rgb_skip=3):
         self.args = args
         self.old_path = old_path
         self.new_path = new_path
         self.size = size
         self.skip = rgb_skip
-        self.vae = AutoencoderKLTemporalDecoder.from_pretrained(svd_path, subfolder="vae").to(device)
+        self.vae = vae
 
         annotation_files = [
             old_path + "/annotation/" + f for f in os.listdir(old_path + '/annotation') 
@@ -123,8 +143,6 @@ class EncodeLatentDataset(Dataset):
         mask = torch.sum(mask, dim=-3)  # Keep only one channel for binary mask
         mask = mask.unsqueeze(-1)  # Add channel dimension back
 
-        print(f"Max value in binary mask before processing: {torch.max(mask)}")
-
         # reduce temporal length
         mask = mask[::rgb_skip]
 
@@ -142,7 +160,6 @@ class EncodeLatentDataset(Dataset):
         # Convert from (T, H, W, 1) to (T, 1, H, W) for interpolate function
         # PyTorch's interpolate expects (N, C, H, W) format
         mask = mask.permute(0, 3, 1, 2)  # (T, H, W, 1) -> (T, 1, H, W)
-        print("Mask shape: ", mask.shape)
         
         # Downsample using nearest neighbor interpolation
         downsampled_mask = torch.nn.functional.interpolate(
@@ -153,13 +170,6 @@ class EncodeLatentDataset(Dataset):
 
         os.makedirs(f"{save_root}/latent_segmentation_videos/{data_type}/{traj_id}", exist_ok=True)
         torch.save(downsampled_mask, f"{save_root}/latent_segmentation_videos/{data_type}/{traj_id}/{video_id}.pt")
-
-        print(f"Max value in binary mask after processing: {torch.max(downsampled_mask)}")
-
-        # store a plot of the dwonsample mask
-        import matplotlib.pyplot as plt
-        print(downsampled_mask[-1,0].squeeze().shape)
-        plt.imsave("test.png", downsampled_mask[0,0].squeeze().cpu().numpy(), cmap='gray')
 
         return len(mask)
         
@@ -179,10 +189,11 @@ class EncodeLatentDataset(Dataset):
         with torch.no_grad():
             batch_size = 64
             latents = []
+            # Handle both wrapped and unwrapped VAE models
+            vae_model = self.vae.module if hasattr(self.vae, 'module') else self.vae
             for i in range(0, len(x), batch_size):
                 batch = x[i:i+batch_size]
-                latent = self.vae.encode(batch).latent_dist.sample().mul_(self.vae.config.scaling_factor).cpu()
-                # x = vae.encode(x).latent_dist.sample().mul_(vae.config.scaling_factor).cpu()
+                latent = vae_model.encode(batch).latent_dist.sample().mul_(vae_model.config.scaling_factor).cpu()
                 latents.append(latent)
             x = torch.cat(latents, dim=0)
         os.makedirs(f"{save_root}/latent_videos/{data_type}/{traj_id}", exist_ok=True)
@@ -247,9 +258,10 @@ class EncodeLatentDataset(Dataset):
 if __name__ == "__main__":
     from config import wm_orca_args
     from argparse import ArgumentParser
+    
     parser = ArgumentParser()
-    parser.add_argument('--orca_dataset_path', type=str, default='/data/Ctrl-World/dataset_example/lerobot_dataset')
-    parser.add_argument('--orca_output_path', type=str, default='/data/Ctrl-World/dataset_example/orca_dataset')
+    parser.add_argument('--orca_dataset_path', type=str, default='/data/Ctrl-World/datasets')
+    parser.add_argument('--orca_output_path', type=str, default='/data/Ctrl-World/datasets')
     parser.add_argument('--svd_path', type=str, default='stabilityai/stable-video-diffusion-img2vid')
     parser.add_argument('--frame_size', type=parse_tuple, default=(256, 256))
     # debug
@@ -258,29 +270,158 @@ if __name__ == "__main__":
 
     wm_arguments = wm_orca_args()
 
+    data_list = [
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_close_mimicgen_hand_mask',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_close_mimicgen_hand_mask',
+        # },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_close_sine_hand_mask',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_close_sine_hand_mask',
+        # },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_object_collisions_open_close',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_fixed_ee_object_collisions_open_close',
+        # },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_open_close',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_fixed_ee_open_close',
+        # },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_random',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_fixed_ee_random',
+        # },
+        {
+            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collision_high_res',
+            'desired_fps': 10,
+            'folder_name': 'data_fix_cam_fixed_ee_sine_object_collision_high_res',
+        },
+        {
+            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collision_high_res',
+            'desired_fps': 25,
+            'folder_name': 'data_fix_cam_fixed_ee_sine_object_collision_high_res',
+        },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collision_high_res',
+        #     'desired_fps': 50,
+        #     'folder_name': 'data_fix_cam_fixed_ee_sine_object_collision_high_res',
+        # },
+        {
+            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collisions',
+            'desired_fps': 10,
+            'folder_name': 'data_fix_cam_fixed_ee_sine_object_collisions',
+        },
+        { 
+            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collisions',
+            'desired_fps': 25,
+            'folder_name': 'data_fix_cam_fixed_ee_sine_object_collisions',
+        },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collisions',
+        #     'desired_fps': 50,
+        #     'folder_name': 'data_fix_cam_fixed_ee_sine_object_collisions',
+        # },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_fingers_random_object_locations',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_fixed_fingers_random_object_locations',
+        # },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_view_close_random_motions',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_view_close_random_motions',
+        # },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_sine_fixed_ee',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_sine_fixed_ee',
+        # },
+    ]
+
     accelerator = Accelerator()
-    print(f"Actual FPS after skipping: {wm_arguments.original_fps / wm_arguments.down_sample} Hz")
-    dataset = EncodeLatentDataset(
-        args=wm_arguments,
-        old_path=args.orca_dataset_path,
-        new_path= args.orca_output_path,
-        svd_path=args.svd_path,
-        device=accelerator.device,
-        size=args.frame_size,
-        rgb_skip=wm_arguments.down_sample, # NOTE: Synthetic data is recorded at 45 fps but the decimation is set to 2 which means the fps is actually 45, we use 5 fps
-    )
-    tmp_data_loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=1,
-            num_workers=0,
-            pin_memory=True,
+    
+    # Load VAE once and prepare with accelerator
+    if accelerator.is_main_process:
+        print(f"Loading VAE from {args.svd_path}...")
+        print(f"Number of processes: {accelerator.num_processes}")
+        print(f"Current process index: {accelerator.process_index}")
+    vae = AutoencoderKLTemporalDecoder.from_pretrained(args.svd_path, subfolder="vae")
+    vae = accelerator.prepare(vae)
+    vae.eval()
+    
+    # Process each dataset in data_dict
+    now = str(datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S"))
+    for dataset_config in data_list:
+        dataset_path = dataset_config['data_path']
+        desired_fps = dataset_config['desired_fps']
+        folder_name = dataset_config['folder_name']
+        
+        # Calculate rgb_skip based on desired FPS
+        # Assuming original_fps is 50 (adjust if different)
+        original_fps = wm_arguments.original_fps
+        rgb_skip = int(original_fps / desired_fps)
+        
+        # Create output path for this specific dataset
+        output_path = os.path.join(os.path.join(args.orca_output_path, now), folder_name + f'_{desired_fps}fps')
+        os.makedirs(output_path, exist_ok=True)
+        
+        start_time = datetime.datetime.now()
+        if accelerator.is_main_process:
+            start_msg = f"🚀 **Starting Dataset Processing**\n" \
+                       f"📁 Dataset: `{folder_name}`\n" \
+                       f"🎯 Desired FPS: {desired_fps} Hz\n" \
+                       f"⏰ Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            send_discord_message(start_msg)
+            
+            print(f"\n{'='*80}")
+            print(f"Processing dataset: {folder_name}")
+            print(f"Source path: {dataset_path}")
+            print(f"Output path: {output_path}")
+            print(f"Original FPS: {original_fps} Hz")
+            print(f"Desired FPS: {desired_fps} Hz")
+            print(f"RGB skip: {rgb_skip}")
+            print(f"Actual FPS after skipping: {original_fps / rgb_skip} Hz")
+            print(f"{'='*80}\n")
+        
+        dataset = EncodeLatentDataset(
+            args=wm_arguments,
+            old_path=dataset_path,
+            new_path=output_path,
+            vae=vae,
+            size=args.frame_size,
+            rgb_skip=rgb_skip,
         )
-    tmp_data_loader = accelerator.prepare_data_loader(tmp_data_loader)
-    for idx, _ in enumerate(tmp_data_loader):
-        if idx == 1 and args.debug:
-            break
-        if idx % 100 == 0 and accelerator.is_main_process:
-            print(f"Precomputed {idx} samples", flush=True)
+        
+        tmp_data_loader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=1,
+                num_workers=0,  # Keep 0 because VAE is used in __getitem__
+                pin_memory=True,
+            )
+        # Accelerate will automatically distribute dataset across GPUs
+        tmp_data_loader = accelerator.prepare_data_loader(tmp_data_loader)
+
+        for idx, _ in enumerate(tmp_data_loader):
+            if idx == 1 and args.debug:
+                break
+            if idx % 100 == 0 and accelerator.is_main_process:
+                print(f"[{folder_name}] Precomputed {idx} samples", flush=True)
+        
+        end_time = datetime.datetime.now()
+        duration = end_time - start_time
+        if accelerator.is_main_process:
+            end_msg = f"✅ **Completed Dataset Processing**\n" \
+                     f"📁 Dataset: `{folder_name}`\n" \
+                     f"🎯 Desired FPS: {desired_fps} Hz\n" \
+                     f"⏰ Finish Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n" \
+                     f"⏱️ Duration: {str(duration).split('.')[0]}"
+            send_discord_message(end_msg)
+            print(f"\nCompleted processing {folder_name}\n")
 
 # accelerate launch dataset_example/extract_latent.py --droid_hf_path /cephfs/shared/droid_hf/droid_1.0.1 --droid_output_path dataset_example/droid_subset --svd_path /cephfs/shared/llm/stable-video-diffusion-img2vid --debug
 
