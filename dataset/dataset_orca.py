@@ -258,9 +258,17 @@ class Dataset_mix(Dataset):
 
         # prepare action cond data
         cartesian_pose = np.array(label['observation.state.cartesian_position'])[state_id]
-        gripper_pose = np.array(label['observation.state.hand_joint_position'])[state_id]
-        action = np.concatenate((cartesian_pose, gripper_pose), axis=-1)
-        action = self.normalize_bound(action, state_p01, state_p99)
+        gripper_action = np.array(label['observation.state.hand_joint_position'])[state_id]
+
+        if self.args.use_only_hand_actions:
+            action = self.normalize_bound(gripper_action, state_p01[:, 6:], state_p99[:, 6:])
+            if self.args.use_average_scalar_hand_action:
+                action = np.mean(action, axis=-1, keepdims=True)
+        elif self.args.use_only_ee_pose_actions:
+            action = self.normalize_bound(cartesian_pose, state_p01[:, :6], state_p99[:, :6])
+        else:
+            action = np.concatenate((cartesian_pose, gripper_action), axis=-1)
+            action = self.normalize_bound(action, state_p01, state_p99)
         data['action'] = torch.tensor(action).float()
 
         if return_frame_ids:
