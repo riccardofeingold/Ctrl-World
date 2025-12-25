@@ -69,24 +69,30 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     return emb
 
 class Action_encoder2(nn.Module):
-    def __init__(self, action_dim, action_num, hidden_size, text_cond=True):
+    def __init__(self, action_dim, action_num, hidden_sizes, text_cond=True):
         super().__init__()
         self.action_dim = action_dim
         self.action_num = action_num
-        self.hidden_size = hidden_size
+        self.hidden_sizes = hidden_sizes if isinstance(hidden_sizes, list) else [hidden_sizes]
         self.text_cond = text_cond
 
         input_dim = int(action_dim)
+
+        # Create hidden layers: flatten list comprehension properly
+        hidden_layers = []
+        for hidden_size in self.hidden_sizes:
+            hidden_layers.extend([nn.Linear(hidden_size, hidden_size), nn.SiLU()])
+        
         self.action_encode = nn.Sequential(
-            nn.Linear(input_dim, 1024),
+            nn.Linear(input_dim, self.hidden_sizes[0]),
             nn.SiLU(),
-            nn.Linear(1024, 1024),
-            nn.SiLU(),
-            nn.Linear(1024, 1024)
+            *hidden_layers,
+            nn.Linear(self.hidden_sizes[-1], self.hidden_sizes[-1]),
         )
         # kaiming initialization
         nn.init.kaiming_normal_(self.action_encode[0].weight, mode='fan_in', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.action_encode[2].weight, mode='fan_in', nonlinearity='relu')
+        if len(hidden_layers) > 0:
+            nn.init.kaiming_normal_(self.action_encode[2].weight, mode='fan_in', nonlinearity='relu')
 
     def forward(self, action,  texts=None, text_tokinizer=None, text_encoder=None, frame_level_cond=True,):
         # action: (B, action_num, action_dim)
@@ -139,7 +145,7 @@ class CrtlWorld(nn.Module):
         self.text_encoder.requires_grad_(False)
 
         # initialize an action projector
-        self.action_encoder = Action_encoder2(action_dim=args.action_dim, action_num=int(args.num_history+args.num_frames), hidden_size=1024, text_cond=args.text_cond)
+        self.action_encoder = Action_encoder2(action_dim=args.action_dim, action_num=int(args.num_history+args.num_frames), hidden_sizes=args.action_encoder_hidden_dims, text_cond=args.text_cond)
 
     
 
