@@ -1,21 +1,21 @@
 # Experiment: 25fps high resolution
 experiment:
-  experiment_name: "orca_25fps_highres"
-  experiment_description: "Training with 25fps high resolution data"
+  experiment_name: "orca_50fps_highres"
+  experiment_description: "Training with 50fps high resolution data"
   base_config: "../base_config.yaml"  # Reference to base config
 
 # Only override what's different from base
 training:
-  tag: "orca_25fps_highres_sine_object_collision_fixed_ee_fixed_cam"
+  tag: "orca_50fps_highres_sine_object_collision_fixed_ee_fixed_cam"
   output_dir: "model_ckpt/${training.tag}"
   wandb_run_name: "${experiment.experiment_name}_${training.tag}"
   wandb_project_name: "orca_video_frequency_test"
 
 dataset:
   dataset_root_path: "datasets/2025-12-24T01-20-32"
-  dataset_names: "data_fix_cam_fixed_ee_sine_object_collision_high_res_25fps"
+  dataset_names: "data_fix_cam_fixed_ee_sine_object_collision_high_res_50fps"
   dataset_cfgs: ${dataset.dataset_names}
-  down_sample: 2  # 50/25 = 2
-  fps: 25
-  num_frames: 25
-  num_history: 25
+  down_sample: 1  # 50/50 = 1
+  fps: 50
+  num_frames: 50
+  num_history: 50

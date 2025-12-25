@@ -1,20 +1,21 @@
 # Experiment: 10fps with hand mask
 experiment:
-  experiment_name: "orca_10fps_highres"
-  experiment_description: "Training with 10fps data and hand segmentation masks"
+  experiment_name: "orca_50fps_lowres"
+  experiment_description: "Training with 50fps data and hand segmentation masks"
   base_config: "../base_config.yaml"  # Reference to base config
   
 # Override base config parameters
 training:
-  tag: "orca_10fps_high_res_sine_object_collision_fixed_ee_fixed_cam"
+  tag: "data_fix_cam_fixed_ee_sine_object_collisions_50fps"
   output_dir: "model_ckpt/${training.tag}"
   wandb_run_name: "${experiment.experiment_name}_${training.tag}"
   wandb_project_name: "orca_video_frequency_test"
 
 dataset:
   dataset_root_path: "datasets/2025-12-24T01-20-32"
-  dataset_names: "data_fix_cam_fixed_ee_sine_object_collision_high_res_10fps"
-  down_sample: 5  # 50/10 = 5
-  fps: 10
-  num_frames: 10
-  num_history: 10
+  dataset_names: "data_fix_cam_fixed_ee_sine_object_collisions_50fps"
+  dataset_cfgs: ${dataset.dataset_names}
+  down_sample: 1  # 50/50 = 1
+  fps: 50
+  num_frames: 50
+  num_history: 50

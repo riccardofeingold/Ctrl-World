@@ -1,0 +1,30 @@
+# Base configuration that all experiments inherit from
+# Experiment: 10fps with hand mask
+experiment:
+  experiment_name: "open_close_all_finger_joints"
+  experiment_description: "Training with open and close actions for all finger joints"
+  base_config: "../base_config.yaml"  # Reference to base config
+  
+# Override base config parameters
+training:
+  tag: "data_fix_cam_fixed_ee_open_close_10fps_all_finger_joints"
+  output_dir: "model_ckpt/${training.tag}"
+  wandb_run_name: "${experiment.experiment_name}_${training.tag}"
+  wandb_project_name: "orca_action_space_test"
+
+dataset:
+  dataset_root_path: "datasets/2025-12-24T01-20-32"
+  dataset_names: "data_fix_cam_fixed_ee_open_close_10fps"
+  dataset_meta_info_path: "dataset_meta_info"
+  dataset_cfgs: ${dataset.dataset_names}  # Reference from dataset section
+  fps: 10
+  down_sample: 5  # 50/10 = 5
+  use_only_hand_actions: true
+
+model:
+  # Model architecture
+  action_dim: 17
+  
+  # Frame dimensions
+  num_frames: 10
+  num_history: 10

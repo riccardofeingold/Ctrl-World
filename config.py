@@ -32,7 +32,10 @@ class wm_orca_args:
     max_num_samples: int = 13000
     down_sample: int = 5 # NOTE: is the same value used to skip rgb frames in extract_latent_orca. Only the states are already downsampled during the extract_latent_orca process
     skip_step: int = 1 # defines how many past frames we skip => defines what is put into history
-    use_hand_mask: bool = True
+    use_hand_mask: bool = False
+    use_only_hand_actions: bool = False
+    use_only_ee_pose_actions: bool = False
+    use_average_scalar_hand_action: bool = False
 
     # compression rate of VAE
     vae_compression_rate: int = 8
