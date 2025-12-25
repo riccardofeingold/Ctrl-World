@@ -1,108 +1,110 @@
 import torch
 import os
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Dict
 
 @dataclass
 class wm_orca_args:
+    experiment_name: str = "default_experiment"
+    experiment_description: str = "A default experiment configuration"
+    base_config: str = "experiments/base_config.yaml"
     ########################### training args ##############################
     # model paths
-    svd_model_path = "stabilityai/stable-video-diffusion-img2vid"
-    clip_model_path = "openai/clip-vit-base-patch32"
+    svd_model_path: str = "stabilityai/stable-video-diffusion-img2vid"
+    clip_model_path: str = "openai/clip-vit-base-patch32"
     # ckpt_path = "/data/Ctrl-World/model_ckpt/orca_dataset/checkpoint-20000.pt"
-    ckpt_path = None
-    pi_ckpt = '/cephfs/shared/llm/openpi/openpi-assets-preview/checkpoints/pi05_droid'
+    ckpt_path: str = None
+    pi_ckpt: str = '/cephfs/shared/llm/openpi/openpi-assets-preview/checkpoints/pi05_droid'
 
     # dataset parameters
     # raw data
-    dataset_root_path = "dataset_example"
+    dataset_root_path: str = "dataset_example"
     # NOTE: you can combine multiple datasets by using '+' to separate them
-    dataset_names = 'orca_dataset'
+    dataset_names: str = 'orca_dataset'
     # meta info
-    dataset_meta_info_path = 'dataset_meta_info' #'/cephfs/cjyyj/code/video_evaluation/exp_cfg'#'dataset_meta_info'
-    dataset_cfgs = dataset_names
-    prob=[1]
-    annotation_name='annotation' #'annotation_all_skip1'
-    original_fps = 50
-    num_workers=4
-    max_num_samples = 13000
-    down_sample=5 # NOTE: is the same value used to skip rgb frames in extract_latent_orca. Only the states are already downsampled during the extract_latent_orca process
-    skip_step = 1 # defines how many past frames we skip => defines what is put into history
-    use_hand_mask = True
+    dataset_meta_info_path: str = 'dataset_meta_info' #'/cephfs/cjyyj/code/video_evaluation/exp_cfg'#'dataset_meta_info'
+    dataset_cfgs: str = dataset_names
+    prob: List[float] = field(default_factory=lambda: [1.0])
+    annotation_name: str = 'annotation' #'annotation_all_skip1'
+    original_fps: int = 50
+    num_workers: int = 4
+    max_num_samples: int = 13000
+    down_sample: int = 5 # NOTE: is the same value used to skip rgb frames in extract_latent_orca. Only the states are already downsampled during the extract_latent_orca process
+    skip_step: int = 1 # defines how many past frames we skip => defines what is put into history
+    use_hand_mask: bool = True
 
     # compression rate of VAE
-    vae_compression_rate = 8
+    vae_compression_rate: int = 8
 
     # conditional
-    num_views = 1   # number of camera views used during training
-    only_wrist_view = False
-
+    num_views: int = 1   # number of camera views used during training
+    only_wrist_view: bool = False
     # logs parameters
-    debug = False
-    tag = 'orca_dataset'
-    output_dir = f"model_ckpt/{tag}"
-    wandb_run_name = tag
-    wandb_project_name = "orca_example"
-
+    debug: bool = False
+    tag: str = 'orca_dataset'
+    output_dir: str = f"model_ckpt/{tag}"
+    wandb_run_name: str = tag
+    wandb_project_name: str = "orca_example"
 
     # training parameters
-    hand_weight = 2.5
-    learning_rate= 1e-5 # 5e-6
-    gradient_accumulation_steps = 1
-    mixed_precision = 'fp16'
-    train_batch_size = 4
-    shuffle = True
-    num_train_epochs = 100
-    max_train_steps = 100010
-    checkpointing_steps = 10000
-    validation_steps = 2500
-    max_grad_norm = 1.0
+    hand_weight: float = 2.5
+    learning_rate: float = 1e-5 # 5e-6
+    gradient_accumulation_steps: int = 1
+    mixed_precision: str = 'fp16'
+    train_batch_size: int = 4
+    shuffle: bool = True
+    num_train_epochs: int = 100
+    max_train_steps: int = 100010
+    checkpointing_steps: int = 10000
+    validation_steps: int = 2500
+    max_grad_norm: float = 1.0
     # for val
-    video_num= 4
-    num_validation_batch = 2
+    video_num: int = 4
+    num_validation_batch: int = 2
 
     ############################ model args ##############################
 
     # model parameters
     # defines how much motion there is in the videos: Value between 0 to 255
     # the motion bucket id to use for the generated video. This can be used to control the motion of the generated video. Increasing the motion bucket id increases the motion of the generated video.
-    motion_bucket_id = 127
-    fps = 5
-    guidance_scale = 2 #7.5 #7.5 #7.5 #3.0
-    num_inference_steps = 50
-    decode_chunk_size = 5
-    width = 256
-    height = 256
+    motion_bucket_id: int = 127
+    fps: int = 5
+    guidance_scale: float = 2 #7.5 #7.5 #7.5 #3.0
+    num_inference_steps: int = 50
+    decode_chunk_size: int = 5
+    width: int = 256
+    height: int = 256
     # num history and num future predictions
-    num_frames= 5
-    num_history = 5
-    action_dim = 23 # 6 for cartesian pos + 17 for hand joint pos
-    text_cond = False
-    frame_level_cond = True
-    his_cond_zero = False
-    dtype = torch.bfloat16 # [torch.float32, torch.bfloat16] # during inference, we can use bfloat16 to accelerate the inference speed and save memory
+    num_frames: int = 5
+    num_history: int = 5
+    action_dim: int = 23 # 6 for cartesian pos + 17 for hand joint pos
+    text_cond: bool = False
+    frame_level_cond: bool = True
+    his_cond_zero: bool = False
+    action_encoder_hidden_dims: List[int] = field(default_factory=lambda: [1024])
+    dtype: torch.dtype = torch.bfloat16 # [torch.float32, torch.bfloat16] # during inference, we can use bfloat16 to accelerate the inference speed and save memory
 
 
 
     ########################### rollout args ############################
     # policy
     task_type: str = "pickplace" # choose from ['pickplace', 'towel_fold', 'wipe_table', 'tissue', 'close_laptop','tissue','drawer','stack']
-    gripper_max_dict = {'replay':1.0, 'pickplace':0.75, 'towel_fold':0.95, 'wipe_table':0.95, 'tissue':0.97, 'close_laptop':0.95,'drawer':0.75,'stack':0.75,}
+    gripper_max_dict: Dict[str, float] = field(default_factory=lambda: {'replay':1.0, 'pickplace':0.75, 'towel_fold':0.95, 'wipe_table':0.95, 'tissue':0.97, 'close_laptop':0.95,'drawer':0.75,'stack':0.75,})
     ##############################################################################
-    policy_type = 'pi05' # choose from ['pi05', 'pi0', 'pi0fast']
-    action_adapter = 'models/action_adapter/model2_15_9.pth' # adapat action from joint vel to cartesian pose
-    pred_step = 5 # predict 5 steps (1s) action each time
-    policy_skip_step = 2 # horizon = (pred_step-1) * policy_skip_step
-    interact_num = 12 # number of interactions (each interaction contains pred_step steps)
+    policy_type: str = 'pi05' # choose from ['pi05', 'pi0', 'pi0fast']
+    action_adapter: str = 'models/action_adapter/model2_15_9.pth' # adapat action from joint vel to cartesian pose
+    pred_step: int = 5 # predict 5 steps (1s) action each time
+    policy_skip_step: int = 2 # horizon = (pred_step-1) * policy_skip_step
+    interact_num: int = 12 # number of interactions (each interaction contains pred_step steps)
 
     # wm
-    data_stat_path = 'dataset_meta_info/orca_dataset/stat.json'
-    val_model_path = ckpt_path
+    data_stat_path: str = 'dataset_meta_info/orca_dataset/stat.json'
+    val_model_path: str = ckpt_path
     history_idx = [0,0,-12,-9,-6,-3]
 
     # save
-    save_dir = 'synthetic_traj'
-
+    save_dir: str = 'synthetic_traj'
     # select different traj for different tasks
     def __post_init__(self):
         # Per-task gripper max
