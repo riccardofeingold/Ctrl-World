@@ -52,7 +52,9 @@ def main(args):
         now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
         tag = args.tag
         run_name = f"train_{now}_{tag}"
-        accelerator.init_trackers(args.wandb_project_name,config={}, init_kwargs={"wandb":{"name":run_name}})
+        # Convert args to dict for wandb
+        config_dict = args_to_dict(args)
+        accelerator.init_trackers(args.wandb_project_name, config=config_dict, init_kwargs={"wandb":{"name":run_name}})
         os.makedirs(args.output_dir, exist_ok=True)
         # count parameters num in each part
         num_params = sum(p.numel() for p in model.unet.parameters())
@@ -277,7 +279,8 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
     # Only compare future frames (skip history frames)
     gt_frames_only = video_gt[:, args.num_history:]  # Corresponding ground truth frames
     
-    metrics = compute_video_metrics(videos, gt_frames_only)
+    # Compute metrics over a 1-second time window for fair comparison across different fps
+    metrics = compute_video_metrics(videos, gt_frames_only, fps=args.fps, time_window_seconds=1.0)
     
     # Log metrics to wandb
     accelerator.log({
@@ -308,19 +311,35 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
     return 
 
 
-def compute_video_metrics(pred_frames, gt_frames):
+def compute_video_metrics(pred_frames, gt_frames, fps=10, time_window_seconds=1.0):
     """
-    Compute multiple metrics to evaluate predicted video quality against ground truth.
+    Compute multiple metrics to evaluate predicted video quality against ground truth
+    over a specific time window.
     
     Args:
         pred_frames: (B, T, H, W, 3) predicted frames in range [0, 255], uint8
         gt_frames: (B, T, H, W, 3) ground truth frames in range [0, 255], uint8
+        fps: frame rate of the video (default: 10)
+        time_window_seconds: time window in seconds to evaluate (default: 1.0)
     
     Returns:
         dict with metrics: psnr, ssim, mse, mae, lpips
     """
     from skimage.metrics import structural_similarity as ssim
     from skimage.metrics import peak_signal_noise_ratio as psnr
+    
+    # Calculate number of frames corresponding to the time window
+    frames_in_window = int(fps * time_window_seconds)
+    total_frames = pred_frames.shape[1]
+    
+    # Ensure we don't exceed available frames
+    frames_to_evaluate = min(frames_in_window, total_frames)
+    
+    # Slice to only evaluate the specified time window (first N frames)
+    pred_frames = pred_frames[:, :frames_to_evaluate]
+    gt_frames = gt_frames[:, :frames_to_evaluate]
+    
+    print(f"Evaluating metrics over {frames_to_evaluate} frames ({frames_to_evaluate/fps:.2f}s at {fps} fps)")
     
     # Flatten batch and time dimensions
     pred_flat = pred_frames.reshape(-1, *pred_frames.shape[2:])  # (B*T, H, W, 3)
@@ -382,37 +401,92 @@ def compute_video_metrics(pred_frames, gt_frames):
     }
 
 
+def args_to_dict(args):
+    """Convert args object to dictionary for wandb config."""
+    config_dict = {}
+    for attr_name in dir(args):
+        if attr_name.startswith('_') or callable(getattr(args, attr_name)):
+            continue
+        try:
+            value = getattr(args, attr_name)
+            # Convert torch dtypes to strings
+            if isinstance(value, torch.dtype):
+                dtype_str_map = {
+                    torch.float32: 'float32',
+                    torch.float16: 'float16',
+                    torch.bfloat16: 'bfloat16',
+                }
+                value = dtype_str_map.get(value, str(value))
+            config_dict[attr_name] = value
+        except Exception:
+            continue
+    return config_dict
 
 if __name__ == "__main__":
     # reset parameters with command line
     from argparse import ArgumentParser
+    from utils.config_loader import load_experiment_config, save_config_to_yaml, list_available_experiments
+
     parser = ArgumentParser()
-    parser.add_argument('--svd_model_path', type=str, default="stabilityai/stable-video-diffusion-img2vid")
-    parser.add_argument('--clip_model_path', type=str, default="openai/clip-vit-base-patch32")
-    # parser.add_argument('--ckpt_path', type=str, default="checkpoints/droid/checkpoint-10000.pt")
+
+    # Main way to specify experiment config
+    parser.add_argument('--config', type=str, default=None,
+                       help='Direct path to experiment config file')
+    parser.add_argument('--list_experiments', action='store_true',
+                       help='List all available experiment configurations')    
+
+    parser.add_argument('--svd_model_path', type=str, default=None)
+    parser.add_argument('--clip_model_path', type=str, default=None)
     parser.add_argument('--ckpt_path', type=str, default=None)
     parser.add_argument('--dataset_root_path', type=str, default=None)
-    parser.add_argument('--dataset_meta_info_path', type=str, default=None)
-    parser.add_argument('--tag', type=str, default=None)
-    
-    # described how many frames/states to skip
-    parser.add_argument('--fps', type=int, default=1)
-
-    # dataset_names
     parser.add_argument('--dataset_names', type=str, default=None)
-    args_new = parser.parse_args()
+    parser.add_argument('--tag', type=str, default=None)
+    parser.add_argument('--fps', type=int, default=None)
+    parser.add_argument('--learning_rate', type=float, default=None)
+    parser.add_argument('--train_batch_size', type=int, default=None)
+    
+    args_cli = parser.parse_args()
+    # List experiments if requested
+    if args_cli.list_experiments:
+        print("\n" + "="*60)
+        print("Available Experiments:")
+        print("="*60)
+        experiments = list_available_experiments()
+        for exp in experiments:
+            print(f"\n📋 {exp['name']}")
+            print(f"   File: {exp['file']}")
+            print(f"   Description: {exp['description']}")
+        print("\n" + "="*60)
+        exit(0)
+
     args = wm_orca_args()
 
-    def merge_args(args, new_args):
-        for k, v in new_args.__dict__.items():
-            if v is not None:
-                args.__dict__[k] = v
-        return args
-
-    args = merge_args(args, args_new)
-    args.tag = args_new.tag if args_new.tag is not None else args.dataset_names
-    args.down_sample = int(args.original_fps / args_new.fps)
-
+    # Load experiment config if specified
+    if args_cli.config:
+        print(f"Loading experiment config from: {args_cli.config}")
+        args = load_experiment_config(args_cli.config, args)
+    else:
+        print("No experiment config specified, using default config")
+        exit(0)
+    
+    # Apply command-line overrides (these take precedence)
+    for key, value in vars(args_cli).items():
+        if value is not None and hasattr(args, key):
+            print(f"Overriding {key}: {getattr(args, key)} -> {value}")
+            setattr(args, key, value)
+    
+    # Compute derived values
+    if args_cli.fps is not None:
+        args.down_sample = int(args.original_fps / args_cli.fps)
+    
+    if args_cli.tag is not None:
+        args.output_dir = f"model_ckpt/{args_cli.tag}"
+        args.wandb_run_name = args_cli.tag
+    
+    # Save the final config used for this run
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Start training
     main(args)
 
     # CUDA_VISIBLE_DEVICES=0,1 WANDB_MODE=offline accelerate launch --main_process_port 29501 train_wm.py --dataset_root_path dataset_example --dataset_meta_info_path dataset_meta_info
