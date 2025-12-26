@@ -301,11 +301,11 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
     # save and upload these videos to wandb
     os.makedirs(f"{videos_dir}/samples", exist_ok=True)
     filename = f"{videos_dir}/samples/train_steps_{train_steps}_{id}.mp4"
-    mediapy.write_video(filename, videos, fps=2)
+    mediapy.write_video(filename, videos, fps=args.fps)
     
     # Upload video to wandb using accelerator
     accelerator.log({
-        f"video_{id}": wandb.Video(filename, fps=2, format="mp4")
+        f"video_{id}": wandb.Video(filename, fps=args.fps, format="mp4")
     }, step=train_steps)
     
     return 
