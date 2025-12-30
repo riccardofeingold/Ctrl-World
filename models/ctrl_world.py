@@ -87,7 +87,7 @@ class Action_encoder2(nn.Module):
             nn.Linear(input_dim, self.hidden_sizes[0]),
             nn.SiLU(),
             *hidden_layers,
-            nn.Linear(self.hidden_sizes[-1], self.hidden_sizes[-1]),
+            nn.Linear(self.hidden_sizes[-1], 1024),
         )
         # kaiming initialization
         nn.init.kaiming_normal_(self.action_encode[0].weight, mode='fan_in', nonlinearity='relu')
