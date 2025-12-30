@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parser.add_argument('--experiments', nargs='+', help='Specific experiments to run')
     parser.add_argument('--available_gpus', type=str, default='0,1,2,3,4,5,6,7', 
                         help='Comma-separated list of available GPU IDs')
-    parser.add_argument('--gpus_per_experiment', type=int, default=2,
+    parser.add_argument('--gpus_per_experiment', type=int, default=1,
                         help='Number of GPUs to assign to each experiment')
     parser.add_argument('--parallel', action='store_true',
                         help='Run experiments in parallel')

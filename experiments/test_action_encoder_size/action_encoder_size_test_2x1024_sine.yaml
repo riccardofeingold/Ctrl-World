@@ -1,0 +1,31 @@
+# Base configuration that all experiments inherit from
+# Experiment: 10fps with hand mask
+experiment:
+  experiment_name: "action_encoder_test_2x2048_sine"
+  experiment_description: "Training on sine wave finger motion data with action encoder size of 2048."
+  base_config: "../base_config.yaml"  # Reference to base config
+  
+# Override base config parameters
+training:
+  tag: "action_encoder_test_2x2048_sine"
+  output_dir: "model_ckpt/${training.tag}"
+  wandb_run_name: "${experiment.experiment_name}_${training.tag}"
+  wandb_project_name: "action_encoder_size_test"
+  
+dataset:
+  dataset_root_path: "datasets/2025-12-24T01-20-32"
+  dataset_names: "data_fix_cam_close_sine_hand_mask_10fps"
+  dataset_meta_info_path: "dataset_meta_info"
+  dataset_cfgs: ${dataset.dataset_names}  # Reference from dataset section
+  annotation_name: "annotation"
+  original_fps: 50
+  fps: 10
+  down_sample: 5  # 50/10 = 5
+
+model:
+  action_dim: 23
+  action_encoder_hidden_dims: [2048]
+  
+  # Frame dimensions
+  num_frames: 10
+  num_history: 10

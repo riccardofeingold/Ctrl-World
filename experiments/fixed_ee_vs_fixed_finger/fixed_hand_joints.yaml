@@ -1,0 +1,29 @@
+# Base configuration that all experiments inherit from
+# Experiment: 10fps with hand mask
+experiment:
+  experiment_name: "moving_ee_and_fixed_hand_joints"
+  experiment_description: "Training on dataset where only the EE is changing and the hand joints are fixed."
+  base_config: "../base_config.yaml"  # Reference to base config
+  
+# Override base config parameters
+training:
+  tag: "data_fix_cam_fixed_fingers_random_object_locations_10fps"
+  output_dir: "model_ckpt/${training.tag}"
+  wandb_run_name: "${experiment.experiment_name}_${training.tag}"
+  wandb_project_name: "orca_fixed_ee_vs_fixed_finger"
+  
+dataset:
+  dataset_root_path: "datasets/2025-12-24T01-20-32"
+  dataset_names: "data_fix_cam_fixed_fingers_random_object_locations_10fps"
+  dataset_meta_info_path: "dataset_meta_info"
+  dataset_cfgs: ${dataset.dataset_names}  # Reference from dataset section
+  annotation_name: "annotation"
+  fps: 10
+  down_sample: 5  # 50/10 = 5
+  use_only_ee_pose_actions: true
+
+model:
+  action_dim: 6
+  
+  num_frames: 10
+  num_history: 10
