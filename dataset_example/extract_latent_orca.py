@@ -1,15 +1,12 @@
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import mediapy
-import os
 import argparse
 from diffusers.models import AutoencoderKL
-import mediapy
 import torch
 import numpy as np
 import json
 from diffusers.models import AutoencoderKL,AutoencoderKLTemporalDecoder
-import mediapy
 from torch.utils.data import Dataset
 
 import pandas as pd
@@ -47,13 +44,14 @@ def parse_tuple(s):
 
 
 class EncodeLatentDataset(Dataset): 
-    def __init__(self, args, old_path, new_path, vae, size=(192, 320), rgb_skip=3):
+    def __init__(self, args, old_path, new_path, vae, size=(192, 320), rgb_skip=3, val_ratio=0.3):
         self.args = args
         self.old_path = old_path
         self.new_path = new_path
         self.size = size
         self.skip = rgb_skip
         self.vae = vae
+        self.val_ratio = val_ratio
 
         annotation_files = [
             old_path + "/annotation/" + f for f in os.listdir(old_path + '/annotation') 
@@ -80,7 +78,8 @@ class EncodeLatentDataset(Dataset):
         instruction = traj_data['texts'][0]
         traj_id = traj_data['episode_id']
 
-        data_type = 'val' if traj_id%100 == 3 else 'train'
+        # Use hash for better distribution, then threshold based on val_ratio
+        data_type = 'val' if (hash(traj_id) % 100) < (self.val_ratio * 100) else 'train'
         length = len(traj_data['observation.state.cartesian_position'])
 
         obs_car = []
@@ -211,7 +210,7 @@ class EncodeLatentDataset(Dataset):
                 assert seg_length == video_length
         else:
             for video_id, video_path in enumerate(video_paths):
-                self.extract_rgb_latents(video_id, video_path, save_root, traj_id, data_type, size, rgb_skip, device)
+                video_length = self.extract_rgb_latents(video_id, video_path, save_root, traj_id, data_type, size, rgb_skip, device)
         
         # record cartesain aligned with video frames
         cartesian_pose = np.array(traj_info['observation.state.cartesian_position'])
@@ -264,13 +263,28 @@ if __name__ == "__main__":
     parser.add_argument('--orca_output_path', type=str, default='/data/Ctrl-World/datasets')
     parser.add_argument('--svd_path', type=str, default='stabilityai/stable-video-diffusion-img2vid')
     parser.add_argument('--frame_size', type=parse_tuple, default=(256, 256))
+    parser.add_argument('--use_hand_mask', action='store_true')
+    parser.add_argument('--val_ratio', type=float, default=0.3)
     # debug
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
     wm_arguments = wm_orca_args()
 
+    if args.use_hand_mask:
+        wm_arguments.use_hand_mask = True
+
     data_list = [
+        {
+            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2026-01-03T18-18-58/data_working_hand_mask_sine_hand_motions',
+            'desired_fps': 10,
+            'folder_name': 'data_working_hand_mask_sine_hand_motions'
+        },
+        {
+            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2026-01-03T18-18-58/data_working_hand_mask_sine_hand_motions_fixed_ee',
+            'desired_fps': 10,
+            'folder_name': 'data_working_hand_mask_sine_hand_motions_fixed_ee'
+        }
         # {
         #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_close_mimicgen_hand_mask',
         #     'desired_fps': 10,
@@ -296,31 +310,31 @@ if __name__ == "__main__":
         #     'desired_fps': 10,
         #     'folder_name': 'data_fix_cam_fixed_ee_random',
         # },
-        {
-            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collision_high_res',
-            'desired_fps': 10,
-            'folder_name': 'data_fix_cam_fixed_ee_sine_object_collision_high_res',
-        },
-        {
-            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collision_high_res',
-            'desired_fps': 25,
-            'folder_name': 'data_fix_cam_fixed_ee_sine_object_collision_high_res',
-        },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collision_high_res',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_fixed_ee_sine_object_collision_high_res',
+        # },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collision_high_res',
+        #     'desired_fps': 25,
+        #     'folder_name': 'data_fix_cam_fixed_ee_sine_object_collision_high_res',
+        # },
         # {
         #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collision_high_res',
         #     'desired_fps': 50,
         #     'folder_name': 'data_fix_cam_fixed_ee_sine_object_collision_high_res',
         # },
-        {
-            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collisions',
-            'desired_fps': 10,
-            'folder_name': 'data_fix_cam_fixed_ee_sine_object_collisions',
-        },
-        { 
-            'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collisions',
-            'desired_fps': 25,
-            'folder_name': 'data_fix_cam_fixed_ee_sine_object_collisions',
-        },
+        # {
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collisions',
+        #     'desired_fps': 10,
+        #     'folder_name': 'data_fix_cam_fixed_ee_sine_object_collisions',
+        # },
+        # { 
+        #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collisions',
+        #     'desired_fps': 25,
+        #     'folder_name': 'data_fix_cam_fixed_ee_sine_object_collisions',
+        # },
         # {
         #     'data_path': '/data/faive_lab/datasets/converted_to_lerobot/2025-12-23T16-08-41/data_fix_cam_fixed_ee_sine_object_collisions',
         #     'desired_fps': 50,
@@ -395,6 +409,7 @@ if __name__ == "__main__":
             vae=vae,
             size=args.frame_size,
             rgb_skip=rgb_skip,
+            val_ratio=args.val_ratio,
         )
         
         tmp_data_loader = torch.utils.data.DataLoader(

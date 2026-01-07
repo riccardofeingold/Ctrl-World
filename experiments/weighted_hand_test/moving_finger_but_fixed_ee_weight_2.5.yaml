@@ -1,0 +1,35 @@
+# Base configuration that all experiments inherit from
+# Experiment: 10fps with hand mask
+experiment:
+  experiment_name: "weighted_hand_test_moving_finger_but_fixed_ee_weight_2.5"
+  experiment_description: "Training with higher hand weight, moving finger but fixed end-effector"
+  base_config: "../base_config.yaml"  # Reference to base config
+  
+# Override base config parameters
+training:
+  tag: "weighted_hand_test_moving_finger_but_fixed_ee_weight_2.5"
+  output_dir: "model_ckpt/${training.tag}"
+  wandb_run_name: "${experiment.experiment_name}_${training.tag}"
+  wandb_project_name: "weighted_hand_test"
+  
+dataset:
+  dataset_root_path: "datasets/2026-01-04T13-57-55"
+  dataset_names: "data_working_hand_mask_sine_hand_motions_fixed_ee_10fps"
+  dataset_meta_info_path: "dataset_meta_info"
+  dataset_cfgs: ${dataset.dataset_names}  # Reference from dataset section
+  annotation_name: "annotation"
+  use_hand_mask: true
+  use_only_hand_actions: true
+
+model:
+  # Model architecture
+  action_dim: 17
+  action_encoder_hidden_dims: [1024]
+  vae_compression_rate: 8
+  
+  # Training/inference settings
+  hand_weight: 2.5
+  
+  # Frame dimensions
+  num_frames: 10
+  num_history: 10
