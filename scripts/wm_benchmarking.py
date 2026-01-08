@@ -14,6 +14,7 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import torch
+import einops
 from torch.utils.data import DataLoader
 
 from accelerate import Accelerator
@@ -23,6 +24,19 @@ from utils.config_loader import load_experiment_config
 from dataset.dataset_orca import Dataset_mix
 from models.ctrl_world import CrtlWorld
 from models.pipeline_ctrl_world import CtrlWorldDiffusionPipeline
+
+from dotenv import load_dotenv
+load_dotenv()
+
+# For video processing and latent extraction
+try:
+    import mediapy
+except Exception:
+    mediapy = None
+try:
+    from diffusers.models import AutoencoderKLTemporalDecoder
+except Exception:
+    AutoencoderKLTemporalDecoder = None
 
 # YAML parsing with interpolation support (same stack as training)
 try:
@@ -332,6 +346,400 @@ def apply_mask(frames: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.nda
     return f.astype(np.uint8), m
 
 
+class TestDataset:
+    """
+    Dataset class for test datasets with structure:
+    - annotation/*.json
+    - videos/{id}/0_rgb.mp4
+    - videos/{id}/0_segmentation.mp4
+    
+    Computes latents on-the-fly using VAE and handles downsampling based on desired FPS.
+    """
+    def __init__(
+        self,
+        dataset_root: str,
+        args: wm_orca_args,
+        mode: str = "val",
+        vae: Optional[torch.nn.Module] = None,
+        cache_latents: bool = True,
+    ):
+        self.dataset_root = dataset_root
+        self.args = args
+        self.mode = mode
+        self.vae = vae
+        self.cache_latents = cache_latents
+        self.horizon_seconds = 1.0
+
+        # Calculate downsampling
+        self.original_fps = getattr(args, "original_fps", 50)
+        self.desired_fps = args.fps
+        self.rgb_skip = max(1, int(self.original_fps / self.desired_fps))
+        self.actual_fps = self.original_fps / self.rgb_skip
+        
+        # Load annotations
+        ann_dir = os.path.join(dataset_root, "annotation")
+        if not os.path.exists(ann_dir):
+            raise FileNotFoundError(f"Annotation directory not found: {ann_dir}")
+        
+        self.annotations = []
+        for ann_file in os.listdir(ann_dir):
+            if ann_file.endswith(".json"):
+                ann_path = os.path.join(ann_dir, ann_file)
+                with open(ann_path, "r", encoding="utf-8") as f:
+                    ann = json.load(f)
+                self.annotations.append(ann)
+        
+        # Create cache directory for latents
+        if self.cache_latents:
+            self.cache_dir = os.path.join(dataset_root, "latent_cache", f"{self.desired_fps}fps")
+            os.makedirs(self.cache_dir, exist_ok=True)
+        else:
+            self.cache_dir = None
+            
+        # Compute normalization stats if not already computed
+        self._compute_meta_info_if_needed()
+    
+    def _compute_meta_info_if_needed(self):
+        """Load normalization stats from training dataset meta info, not test dataset"""
+        # Try to load from args.dataset_meta_info_path (same as training)
+        dataset_name = self.args.dataset_names.split('+')[0]  # Use first dataset name
+        training_stat_path = os.path.join(self.args.dataset_meta_info_path, dataset_name, "stat.json")
+        
+        if os.path.exists(training_stat_path):
+            # Use training normalization (CORRECT approach)
+            with open(training_stat_path, "r", encoding="utf-8") as f:
+                stat = json.load(f)
+            self.state_p01 = np.array(stat["state_01"])
+            self.state_p99 = np.array(stat["state_99"])
+            print(f"Using training normalization from: {training_stat_path}")
+            return
+        
+        # Fallback: Check if test dataset has its own stats (for reference, but warn)
+        meta_info_dir = os.path.join(self.dataset_root, "meta_info")
+        stat_path = os.path.join(meta_info_dir, "stat.json")
+        
+        if os.path.exists(stat_path):
+            print(f"WARNING: Using test dataset normalization instead of training normalization!")
+            print(f"This may cause distribution shift. Training stats should be at: {training_stat_path}")
+            with open(stat_path, "r", encoding="utf-8") as f:
+                stat = json.load(f)
+            self.state_p01 = np.array(stat["state_01"])
+            self.state_p99 = np.array(stat["state_99"])
+            return
+
+        # Compute stats from all annotations
+        print(f"Computing meta info for {self.dataset_root}...")
+        states_all = []
+        for ann in self.annotations:
+            if "states" in ann:
+                states = np.array(ann["states"])
+                # Downsample states to match video frame rate
+                states = states[::self.rgb_skip]
+                states_all.extend(states.tolist())
+        
+        if len(states_all) == 0:
+            # Fallback: try to extract from observation.state fields
+            for ann in self.annotations:
+                if "observation.state.cartesian_position" in ann:
+                    cart = np.array(ann["observation.state.cartesian_position"])
+                    hand = np.array(ann.get("observation.state.hand_joint_position", []))
+                    if len(hand) == 0:
+                        hand = np.array(ann.get("observation.state.hand_joint_position", []))
+                    if len(cart) > 0 and len(hand) > 0:
+                        states = np.concatenate([cart, hand], axis=-1)
+                        states = states[::self.rgb_skip]
+                        states_all.extend(states.tolist())
+        
+        if len(states_all) == 0:
+            # Use default normalization range
+            action_dim = self.args.action_dim
+            self.state_p01 = np.full(action_dim, -1.0)
+            self.state_p99 = np.full(action_dim, 1.0)
+            print(f"Warning: Could not compute stats, using default range [-1, 1] for {action_dim} dims")
+        else:
+            states_arr = np.array(states_all)
+            self.state_p01 = np.percentile(states_arr, 1, axis=0)
+            self.state_p99 = np.percentile(states_arr, 99, axis=0)
+            print(f"Computed stats: state_01 shape={self.state_p01.shape}, state_99 shape={self.state_p99.shape}")
+        
+        # Save stats
+        os.makedirs(meta_info_dir, exist_ok=True)
+        stat = {
+            "state_01": self.state_p01.tolist(),
+            "state_99": self.state_p99.tolist(),
+        }
+        with open(stat_path, "w", encoding="utf-8") as f:
+            json.dump(stat, f, indent=2)
+    
+    def _load_video(self, video_path: str) -> np.ndarray:
+        """Load video using mediapy or decord"""
+        if mediapy is not None:
+            video = mediapy.read_video(video_path)
+            return np.array(video)
+        else:
+            from decord import VideoReader, cpu
+            vr = VideoReader(video_path, ctx=cpu(0))
+            frames = [vr[i].asnumpy() for i in range(len(vr))]
+            return np.array(frames)
+    
+    def _extract_latents_from_video(
+        self, video_path: str, traj_id: str, frame_ids: List[int], device: torch.device
+    ) -> torch.Tensor:
+        """Extract latents from RGB video, with caching support"""
+        cache_path = None
+        if self.cache_latents:
+            cache_path = os.path.join(self.cache_dir, f"{traj_id}_0.pt")
+            if os.path.exists(cache_path):
+                # Load cached latents and select frames
+                latents = torch.load(cache_path)
+                selected = latents[frame_ids]
+                return selected
+        
+        if self.vae is None:
+            raise ValueError("VAE must be provided to extract latents from video")
+        
+        if mediapy is None:
+            raise ImportError("mediapy is required for video loading. Install with: pip install mediapy")
+        
+        # Load video
+        video = self._load_video(video_path)
+        # Convert to tensor and normalize: (T, H, W, 3) -> (T, 3, H, W), range [0, 255] -> [-1, 1]
+        frames = torch.tensor(video).permute(0, 3, 1, 2).float() / 255.0 * 2 - 1
+        
+        # Downsample temporally
+        frames = frames[::self.rgb_skip]
+        
+        # Resize to target resolution
+        target_size = (self.args.height, self.args.width)
+        frames = torch.nn.functional.interpolate(
+            frames, size=target_size, mode="bilinear", align_corners=False
+        )
+        
+        # Encode to latents using VAE
+        vae_model = self.vae.module if hasattr(self.vae, "module") else self.vae
+        vae_model.eval()
+        
+        latents_all = []
+        batch_size = 64
+        with torch.no_grad():
+            frames = frames.to(device)
+            for i in range(0, len(frames), batch_size):
+                batch = frames[i : i + batch_size]
+                latent = vae_model.encode(batch).latent_dist.sample()
+                latent = latent.mul_(vae_model.config.scaling_factor)
+                latents_all.append(latent.cpu())
+        
+        latents = torch.cat(latents_all, dim=0)  # (T_downsampled, 4, Hc, Wc)
+        
+        # Cache if enabled
+        if self.cache_latents and cache_path:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            torch.save(latents, cache_path)
+        
+        # Select requested frames (adjust frame_ids for downsampled sequence)
+        frame_ids_downsampled = [fid // self.rgb_skip for fid in frame_ids]
+        frame_ids_downsampled = [min(fid, len(latents) - 1) for fid in frame_ids_downsampled]
+        selected = latents[frame_ids_downsampled]
+        
+        return selected
+    
+    def _load_segmentation_video(self, seg_path: str, frame_ids: List[int]) -> Optional[np.ndarray]:
+        """Load segmentation video and extract RGBA frames"""
+        if not os.path.exists(seg_path):
+            return None
+        
+        try:
+            video = self._load_video(seg_path)
+            # Downsample temporally
+            video = video[::self.rgb_skip]
+            # Select frames (adjust for downsampling)
+            frame_ids_downsampled = [min(fid // self.rgb_skip, len(video) - 1) for fid in frame_ids]
+            selected = video[frame_ids_downsampled]
+            # Ensure RGBA (4 channels)
+            if selected.shape[-1] == 3:
+                # Add alpha channel
+                alpha = np.ones((*selected.shape[:-1], 1), dtype=selected.dtype) * 255
+                selected = np.concatenate([selected, alpha], axis=-1)
+            return selected.astype(np.uint8)
+        except Exception as e:
+            print(f"Warning: Could not load segmentation video {seg_path}: {e}")
+            return None
+    
+    def normalize_bound(
+        self,
+        data: np.ndarray,
+        state_p01: Optional[np.ndarray] = None,
+        state_p99: Optional[np.ndarray] = None,
+        clip_min: float = -1,
+        clip_max: float = 1,
+    ) -> np.ndarray:
+        """Normalize state data using computed percentiles"""
+        eps = 1e-8
+        p01 = state_p01 if state_p01 is not None else self.state_p01
+        p99 = state_p99 if state_p99 is not None else self.state_p99
+        
+        # Ensure broadcasting works: data shape (..., dim) and p01/p99 shape (dim,)
+        ndata = 2 * (data - p01) / (p99 - p01 + eps) - 1
+        return np.clip(ndata, clip_min, clip_max)
+    
+    def __len__(self):
+        return len(self.annotations)
+    
+    def __getitem__(self, idx: int) -> Dict:
+        """Get a sample from the dataset"""
+        ann = self.annotations[idx]
+        traj_id = ann.get("episode_id", str(idx))
+        
+        # Extract states and prepare actions (handle both "states" key and separate observation keys)
+        cart = np.array(ann["observation.state.cartesian_pose"])
+        hand = np.array(ann.get("observation.state.hand_joint_position", []))
+        states = np.concatenate([cart, hand], axis=-1)
+        
+        # Downsample states
+        states = states[::self.rgb_skip]
+        
+        # Determine frame sequence (history + current + future)
+        # We need num_history frames before current, then current, then num_frames for future
+        # num_frames is the number of future frames to predict
+        # num_history is the number of history frames to use for prediction
+        num_total_frames = self.args.num_history + self.args.fps * self.horizon_seconds
+        
+        # Select a valid starting point (need at least num_history frames before)
+        max_start = max(0, len(states) - num_total_frames)
+        # For validation, use middle of available range for more variety
+        if self.mode == "train":
+            start_idx = 0
+        else:
+            # Use a deterministic start based on trajectory ID for reproducibility
+            start_idx = hash(traj_id) % max(1, max_start + 1) if max_start > 0 else 0
+        
+        # Select frame indices: [history frames..., current, future frames...]
+        frame_ids = []
+        current_idx = start_idx + self.args.num_history
+        
+        # History frames (before current)
+        for i in range(self.args.num_history):
+            hist_idx = current_idx - (self.args.num_history - i)
+            frame_ids.append(max(0, min(hist_idx, len(states) - 1)))
+        
+        # Current frame
+        frame_ids.append(min(current_idx, len(states) - 1))
+        
+        # Future frames
+        for i in range(1, self.args.num_frames):
+            future_idx = current_idx + i
+            frame_ids.append(min(future_idx, len(states) - 1))
+        
+        # Ensure we have exactly the expected number of frames
+        while len(frame_ids) < num_total_frames:
+            frame_ids.append(frame_ids[-1])
+        frame_ids = frame_ids[:num_total_frames]
+        
+        # Extract corresponding states for actions
+        state_selected = states[frame_ids]  # (num_total_frames, state_dim)
+        state_dim = state_selected.shape[-1]
+        
+        # Handle different action space configurations (match Dataset_mix logic)
+        if self.args.use_only_hand_actions:
+            # Expect states to have cartesian (6) + hand joints
+            if state_dim >= 23:
+                hand_start = 6
+                hand_data = state_selected[:, hand_start:]
+                if self.args.use_average_scalar_hand_action:
+                    action = np.mean(hand_data, axis=-1, keepdims=True)
+                else:
+                    action = hand_data
+                # Normalize using corresponding stats slice
+                hand_dim = action.shape[-1]
+                p01_slice = self.state_p01[hand_start:hand_start+hand_dim] if len(self.state_p01) > hand_start else self.state_p01
+                p99_slice = self.state_p99[hand_start:hand_start+hand_dim] if len(self.state_p99) > hand_start else self.state_p99
+                action = self.normalize_bound(action, state_p01=p01_slice, state_p99=p99_slice)
+            else:
+                # Fallback: use all available dimensions, pad/truncate to match action_dim
+                min_dim = min(state_dim, len(self.state_p01))
+                action = self.normalize_bound(
+                    state_selected[:, :min_dim],
+                    state_p01=self.state_p01[:min_dim],
+                    state_p99=self.state_p99[:min_dim]
+                )
+                if action.shape[-1] < self.args.action_dim:
+                    padding = np.zeros((action.shape[0], self.args.action_dim - action.shape[-1]))
+                    action = np.concatenate([action, padding], axis=-1)
+                elif action.shape[-1] > self.args.action_dim:
+                    action = action[:, :self.args.action_dim]
+        elif self.args.use_only_ee_pose_actions:
+            # Use only first 6 dimensions (cartesian pose)
+            if state_dim >= 6:
+                cart_data = state_selected[:, :6]
+                min_dim = min(6, len(self.state_p01))
+                action = self.normalize_bound(
+                    cart_data[:, :min_dim],
+                    state_p01=self.state_p01[:min_dim],
+                    state_p99=self.state_p99[:min_dim]
+                )
+                if action.shape[-1] < self.args.action_dim:
+                    padding = np.zeros((action.shape[0], self.args.action_dim - action.shape[-1]))
+                    action = np.concatenate([action, padding], axis=-1)
+                elif action.shape[-1] > self.args.action_dim:
+                    action = action[:, :self.args.action_dim]
+            else:
+                # Fallback
+                min_dim = min(state_dim, len(self.state_p01))
+                action = self.normalize_bound(
+                    state_selected[:, :min_dim],
+                    state_p01=self.state_p01[:min_dim],
+                    state_p99=self.state_p99[:min_dim]
+                )
+                if action.shape[-1] < self.args.action_dim:
+                    padding = np.zeros((action.shape[0], self.args.action_dim - action.shape[-1]))
+                    action = np.concatenate([action, padding], axis=-1)
+                elif action.shape[-1] > self.args.action_dim:
+                    action = action[:, :self.args.action_dim]
+        else:
+            # Use full state (cartesian + hand joints) - default
+            # Handle dimension mismatch between state_dim and normalization stats
+            if state_dim == len(self.state_p01):
+                action = self.normalize_bound(state_selected)
+            else:
+                # Dimension mismatch: use minimum available dimension
+                min_dim = min(state_dim, len(self.state_p01))
+                action = self.normalize_bound(
+                    state_selected[:, :min_dim],
+                    state_p01=self.state_p01[:min_dim],
+                    state_p99=self.state_p99[:min_dim]
+                )
+                # Pad or truncate to match expected action_dim
+                if action.shape[-1] < self.args.action_dim:
+                    # Pad with zeros
+                    padding = np.zeros((action.shape[0], self.args.action_dim - action.shape[-1]))
+                    action = np.concatenate([action, padding], axis=-1)
+                elif action.shape[-1] > self.args.action_dim:
+                    # Truncate
+                    action = action[:, :self.args.action_dim]
+        
+        # Load RGB video and extract latents
+        video_path = os.path.join(self.dataset_root, "videos", str(traj_id), "0_rgb.mp4")
+        device = next(self.vae.parameters()).device if self.vae else torch.device("cpu")
+        latents = self._extract_latents_from_video(video_path, traj_id, frame_ids, device)
+        
+        # Load segmentation if available
+        seg_path = os.path.join(self.dataset_root, "videos", str(traj_id), "0_segmentation.mp4")
+        seg_rgba = self._load_segmentation_video(seg_path, frame_ids)
+        
+        # Prepare data dict
+        data = {
+            "latent": latents.float(),  # (F, 4, Hc, Wc)
+            "action": torch.tensor(action).float(),  # (F, action_dim)
+            "text": ann.get("texts", [""])[0] if "texts" in ann else "",
+            "episode_id": traj_id,
+        }
+        
+        if seg_rgba is not None:
+            data["seg_rgba"] = seg_rgba
+        
+        return data
+
+
 def average_metric_with_mask(metric_name: str, pred: np.ndarray, gt: np.ndarray, m: np.ndarray) -> float:
     # pred, gt: (T, H, W, 3) uint8; m: (T, H, W) bool
     # For MSE/MAE compute over ROI pixels only; For PSNR/SSIM average per-frame computed on masked frames
@@ -393,6 +801,11 @@ def evaluate_one_batch(
     # Determine num_frames for horizon
     num_frames = int(args.fps * horizon_seconds)
     num_frames = max(1, num_frames)
+    print(f"num_frames: {num_frames}")
+    print(f"his_latent_gt shape: {his_latent_gt.shape}")
+    print(f"future_latent_ft shape: {future_latent_ft.shape}")
+    print(f"current_latent shape: {current_latent.shape}")
+    print(f"action_latent shape: {action_latent.shape}")
 
     # Run pipeline to predict latents
     with torch.no_grad():
@@ -416,11 +829,14 @@ def evaluate_one_batch(
             his_cond_zero=args.his_cond_zero,
         )
 
+    print(f"pred_latents shape: {pred_latents.shape}")
+    print(f"future_latent_ft shape: {future_latent_ft.shape}")
+
     # Prepare GT and predicted latent sequences for future window
     # Assemble GT future latents for the same time span (clamp by availability)
-    future_len = min(num_frames, future_latent_ft.shape[1])
-    gt_latents = future_latent_ft[:, :future_len]
-    pred_latents = pred_latents[:, :future_len]
+    pred_latents = einops.rearrange(pred_latents, 'b f c (m h) (n w) -> (b m n) f c h w', m=args.num_views,n=1) # (B, 8, 4, 32,32)
+    gt_latents = torch.cat([his_latent_gt, future_latent_ft], dim=1) # (B, 8, 4, 32,32)
+    gt_latents = einops.rearrange(gt_latents, 'b f c (m h) (n w) -> (b m n) f c h w', m=args.num_views, n=1) # (B, 8, 4, 32,32)
 
     # Decode both to RGB frames
     def decode_latents(latents: torch.Tensor) -> np.ndarray:
@@ -443,7 +859,8 @@ def evaluate_one_batch(
     pred_frames = decode_latents(pred_latents)
 
     # Basic metrics (whole frame)
-    base = compute_basic_metrics(pred_frames, gt_frames)
+    # we only compare the future frames since the history frames are not predicted
+    base = compute_basic_metrics(pred_frames, gt_frames[args.num_history:])
 
     # ROI masks if segmentation RGBA available
     roi_results: Dict[str, float] = {}
@@ -463,7 +880,7 @@ def evaluate_one_batch(
 
         for name, mask in [("hand", hand_mask), ("object", object_mask), ("background", background_mask)]:
             for k in ("mse", "mae", "psnr", "ssim"):
-                val = average_metric_with_mask(k, pred_frames, gt_frames, mask)
+                val = average_metric_with_mask(k, pred_frames, gt_frames[args.num_history:], mask[args.num_history:])
                 roi_results[f"{name}_{k}"] = val
     else:
         # If segmentation not available, skip ROI metrics
@@ -480,6 +897,7 @@ def evaluate_dataset_for_checkpoint(
     analysis_root: str,
     horizons_s: List[int],
     max_batches: Optional[int] = None,
+    use_test_dataset: bool = False,
 ) -> Dict:
     # Start from the config used in training if we can resolve it later; for now keep defaults.
     args.ckpt_path = ckpt_path
@@ -488,13 +906,27 @@ def evaluate_dataset_for_checkpoint(
     os.makedirs(save_dir, exist_ok=True)
 
     accelerator = Accelerator(log_with=None)
+    
+    # Load VAE for test dataset if needed
+    vae = None
+    if use_test_dataset:
+        if AutoencoderKLTemporalDecoder is None:
+            raise ImportError("AutoencoderKLTemporalDecoder required for test dataset")
+        vae = AutoencoderKLTemporalDecoder.from_pretrained(args.svd_model_path, subfolder="vae")
+        vae = accelerator.prepare(vae)
+        vae.eval()
+    
     model = CrtlWorld(args)
     state_dict = torch.load(args.ckpt_path, map_location="cpu")
     model.load_state_dict(state_dict, strict=True)
     model.to(accelerator.device)
     model.eval()
 
-    val_dataset = Dataset_mix(args, mode="val")
+    # Choose dataset class based on structure
+    if use_test_dataset:
+        val_dataset = TestDataset(dataset_root, args, mode="val", vae=vae, cache_latents=True)
+    else:
+        val_dataset = Dataset_mix(args, mode="val")
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
     metrics_agg: Dict[str, Dict[int, List[float]]] = {}
     vram_stats: Dict[int, List[int]] = {}
@@ -503,39 +935,44 @@ def evaluate_dataset_for_checkpoint(
         metrics_agg[horizon] = {}
         vram_stats[horizon] = []
 
-    with torch.no_grad():
-        for i, batch in enumerate(val_loader):
-            if max_batches is not None and i >= max_batches:
-                break
+        with torch.no_grad():
+            # set the horizon_seconds for the dataset
+            val_dataset.horizon_seconds = horizon
 
-            # Try to load segmentation RGBA frames if present:
-            seg_rgba = None
-            try:
-                # If you keep segmentation videos in resized dataset, adjust here:
-                # Not guaranteed; left as optional.
+            for i, batch in enumerate(val_loader):
+                if max_batches is not None and i >= max_batches:
+                    break
+
+                # Extract segmentation RGBA from batch if available (from TestDataset)
                 seg_rgba = None
-            except Exception:
-                seg_rgba = None
+                if "seg_rgba" in batch:
+                    seg_data = batch["seg_rgba"]
+                    if isinstance(seg_data, (list, tuple)) and len(seg_data) > 0:
+                        seg_rgba = seg_data[0] if isinstance(seg_data[0], np.ndarray) else seg_data[0].numpy()
+                    elif isinstance(seg_data, torch.Tensor):
+                        seg_rgba = seg_data[0].numpy() if seg_data.dim() > 1 else seg_data.numpy()
+                    elif isinstance(seg_data, np.ndarray):
+                        seg_rgba = seg_data[0] if seg_data.ndim > 1 else seg_data
 
-            for horizon in horizons_s:
-                # Adjust args for horizon and reset peak memory before call
-                args.num_frames = int(args.fps * horizon)
-                args.num_frames = max(1, args.num_frames)
-                torch.cuda.reset_peak_memory_stats() if torch.cuda.is_available() else None
-                start = time.time()
+                    print(f"Evaluating horizon: {horizon}s")
+                    # Adjust args for horizon and reset peak memory before call
+                    args.num_frames = int(args.fps * horizon)
+                    args.num_frames = max(1, args.num_frames)
+                    torch.cuda.reset_peak_memory_stats() if torch.cuda.is_available() else None
+                    start = time.time()
 
-                out = evaluate_one_batch(model, accelerator, batch, args, horizon_seconds=horizon, seg_rgba=seg_rgba)
+                    out = evaluate_one_batch(model, accelerator, batch, args, horizon_seconds=horizon, seg_rgba=seg_rgba)
 
-                # aggregate
-                for k, v in out.items():
-                    metrics_agg[horizon].setdefault(k, []).append(v)
+                    # aggregate
+                    for k, v in out.items():
+                        metrics_agg[horizon].setdefault(k, []).append(v)
 
-                # record VRAM
-                if torch.cuda.is_available():
-                    peak = torch.cuda.max_memory_allocated()
-                    vram_stats[horizon].append(int(peak))
+                    # record VRAM
+                    if torch.cuda.is_available():
+                        peak = torch.cuda.max_memory_allocated()
+                        vram_stats[horizon].append(int(peak))
 
-                _ = time.time() - start
+                    _ = time.time() - start
 
     # reduce to means
     summary = {}
@@ -554,8 +991,6 @@ def evaluate_dataset_for_checkpoint(
 
 def main():
     import argparse
-    from dotenv import load_dotenv
-    load_dotenv()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_ckpt_root", type=str, default="model_ckpt")
@@ -566,14 +1001,14 @@ def main():
     parser.add_argument("--max_ckpts_per_tag", type=int, default=3)
     parser.add_argument("--max_batches", type=int, default=None, help="Limit for quick runs; None = full dataset")
     parser.add_argument("--short_horizon_s", type=int, default=1)
-    parser.add_argument("--long_horizon_s", type=int, default=5)
+    parser.add_argument("--long_horizon_s", type=int, default=2)
     args_cli = parser.parse_args()
 
     groups = {
         "action_encoder_size_test": {
             "test_tags": [
                 "action_encoder_size_test_1024_sine",
-                "action_encoder_size_test_2x2048_sine",
+                # "action_encoder_size_test_2x2048_sine",
                 # "action_encoder_size_test_4x1024_sine",
                 # "action_encoder_size_test_1024_random",
                 # "action_encoder_size_test_2x1024_random",
@@ -635,14 +1070,21 @@ def main():
                     f"[{group_name}] Evaluating name='{tag}' -> tag='{resolved_tag}' ckpt='{os.path.basename(ckpt)}' ...",
                     flush=True,
                 )
+                # Detect if dataset_root is a test dataset (has annotation/ and videos/ folders)
+                use_test_dataset = (
+                    os.path.exists(os.path.join(test_dataset_path, "annotation")) and
+                    os.path.exists(os.path.join(test_dataset_path, "videos"))
+                )
+                
                 res = evaluate_dataset_for_checkpoint(
                     tag=resolved_tag,
                     args=resolved_args,
                     ckpt_path=ckpt,
-                    dataset_root=args_cli.dataset_root,
+                    dataset_root=test_dataset_path,
                     analysis_root=args_cli.analysis_root,
                     horizons_s=[args_cli.short_horizon_s, args_cli.long_horizon_s],
                     max_batches=args_cli.max_batches,
+                    use_test_dataset=use_test_dataset,
                 )
                 res["experiment_name"] = tag
                 res["resolved_tag"] = resolved_tag
