@@ -16,6 +16,8 @@ import numpy as np
 import torch
 import einops
 from torch.utils.data import DataLoader
+import pandas as pd
+import matplotlib.pyplot as plt
 
 from accelerate import Accelerator
 
@@ -67,6 +69,12 @@ try:
     from pytorch_fid import inception
 except Exception:
     inception = None
+
+# For heatmap animations
+try:
+    import matplotlib.animation as animation
+except Exception:
+    animation = None
 
 # =============================================================================
 # Configuration for segmentation classes (pixel colors as RGBA)
@@ -740,6 +748,199 @@ class TestDataset:
         return data
 
 
+def calculate_pixel_error(gt_frames: np.ndarray, pred_frames: np.ndarray, error_type: str = 'mse') -> np.ndarray:
+    """
+    Calculate pixel-wise error between ground truth and predictions.
+    
+    Args:
+        gt_frames: Ground truth frames (T, H, W, 3) uint8
+        pred_frames: Predicted frames (T, H, W, 3) uint8
+        error_type: Type of error metric ('mse' or 'mae')
+        
+    Returns:
+        errors: Array of shape (T, H, W) with error values
+    """
+    # Convert to float for calculation
+    gt_frames = gt_frames.astype(np.float32)
+    pred_frames = pred_frames.astype(np.float32)
+    
+    if error_type == 'mse':
+        # Mean squared error across color channels
+        errors = np.mean((gt_frames - pred_frames) ** 2, axis=-1)
+    elif error_type == 'mae':
+        # Mean absolute error across color channels
+        errors = np.mean(np.abs(gt_frames - pred_frames), axis=-1)
+    else:
+        raise ValueError(f"Unknown error type: {error_type}")
+    
+    return errors
+
+
+def plot_heatmap_evolution(errors: np.ndarray, output_path: str, fps: int = 30,
+                          cmap: str = 'hot', interval: int = 100,
+                          vmin: float = None, vmax: float = None):
+    """
+    Create an animated heatmap showing error evolution over time.
+    
+    Args:
+        errors: Array of shape (T, H, W) with error values
+        output_path: Path to save the animation
+        fps: Frames per second for the animation
+        cmap: Colormap to use for heatmap
+        interval: Delay between frames in milliseconds
+        vmin: Minimum value for colormap (None for auto)
+        vmax: Maximum value for colormap (None for auto)
+    """
+    if animation is None:
+        print("Warning: matplotlib.animation not available, skipping heatmap animation")
+        return
+    
+    num_frames, height, width = errors.shape
+    
+    # Set colormap limits if not provided
+    if vmin is None:
+        vmin = np.percentile(errors, 1)  # Use 1st percentile to avoid outliers
+    if vmax is None:
+        vmax = np.percentile(errors, 99)  # Use 99th percentile to avoid outliers
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Initialize with first frame
+    im = ax.imshow(errors[0], cmap=cmap, vmin=vmin, vmax=vmax, interpolation='bilinear')
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Pixel Error', rotation=270, labelpad=20)
+    
+    title = ax.set_title(f'Pixel Error Heatmap - Frame 0/{num_frames}', fontsize=14)
+    ax.set_xlabel('Width (pixels)')
+    ax.set_ylabel('Height (pixels)')
+    
+    # Add statistics text
+    stats_text = ax.text(0.02, 0.98, '', transform=ax.transAxes,
+                        verticalalignment='top', bbox=dict(boxstyle='round', 
+                        facecolor='wheat', alpha=0.5), fontsize=10)
+    
+    def update(frame_idx):
+        """Update function for animation."""
+        im.set_data(errors[frame_idx])
+        title.set_text(f'Pixel Error Heatmap - Frame {frame_idx}/{num_frames}')
+        
+        # Update statistics
+        mean_error = np.mean(errors[frame_idx])
+        max_error = np.max(errors[frame_idx])
+        min_error = np.min(errors[frame_idx])
+        std_error = np.std(errors[frame_idx])
+        
+        stats_text.set_text(
+            f'Mean: {mean_error:.2f}\n'
+            f'Std: {std_error:.2f}\n'
+            f'Min: {min_error:.2f}\n'
+            f'Max: {max_error:.2f}'
+        )
+        
+        return im, title, stats_text
+    
+    # Create animation
+    anim = animation.FuncAnimation(fig, update, frames=num_frames,
+                                  interval=interval, blit=True, repeat=True)
+    
+    # Save animation
+    output_path_obj = os.path.splitext(output_path)[0]  # Remove extension to add .mp4
+    anim_path = f"{output_path_obj}_heatmap_evolution.mp4"
+    writer = animation.FFMpegWriter(fps=fps, bitrate=2000) if animation else None
+    if writer:
+        anim.save(anim_path, writer=writer)
+        print(f"Heatmap animation saved to: {anim_path}")
+    
+    plt.close()
+
+
+def plot_error_statistics(errors: np.ndarray, output_path: str):
+    """
+    Plot error statistics over time.
+    
+    Args:
+        errors: Array of shape (T, H, W) with error values
+        output_path: Path to save the plot
+    """
+    num_frames = errors.shape[0]
+    
+    # Calculate statistics per frame
+    mean_errors = np.mean(errors, axis=(1, 2))
+    std_errors = np.std(errors, axis=(1, 2))
+    max_errors = np.max(errors, axis=(1, 2))
+    min_errors = np.min(errors, axis=(1, 2))
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    frames = np.arange(num_frames)
+    
+    # Mean error over time
+    axes[0, 0].plot(frames, mean_errors, linewidth=2, color='blue')
+    axes[0, 0].fill_between(frames, mean_errors - std_errors, mean_errors + std_errors, 
+                            alpha=0.3, color='blue')
+    axes[0, 0].set_title('Mean Pixel Error Over Time', fontsize=12)
+    axes[0, 0].set_xlabel('Frame')
+    axes[0, 0].set_ylabel('Mean Error')
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Standard deviation over time
+    axes[0, 1].plot(frames, std_errors, linewidth=2, color='orange')
+    axes[0, 1].set_title('Error Standard Deviation Over Time', fontsize=12)
+    axes[0, 1].set_xlabel('Frame')
+    axes[0, 1].set_ylabel('Std Error')
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Max error over time
+    axes[1, 0].plot(frames, max_errors, linewidth=2, color='red')
+    axes[1, 0].set_title('Maximum Pixel Error Over Time', fontsize=12)
+    axes[1, 0].set_xlabel('Frame')
+    axes[1, 0].set_ylabel('Max Error')
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # Error distribution histogram
+    axes[1, 1].hist(errors.flatten(), bins=100, color='green', alpha=0.7, edgecolor='black')
+    axes[1, 1].set_title('Overall Error Distribution', fontsize=12)
+    axes[1, 1].set_xlabel('Error Value')
+    axes[1, 1].set_ylabel('Frequency')
+    axes[1, 1].set_yscale('log')
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    output_path_obj = os.path.splitext(output_path)[0]
+    stats_path = f"{output_path_obj}_error_statistics.png"
+    plt.savefig(stats_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Error statistics plot saved to: {stats_path}")
+
+
+def plot_spatial_error_map(errors: np.ndarray, output_path: str):
+    """
+    Plot average spatial error map across all frames.
+    
+    Args:
+        errors: Array of shape (T, H, W) with error values
+        output_path: Path to save the plot
+    """
+    # Average error across all frames
+    avg_error = np.mean(errors, axis=0)
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    im = ax.imshow(avg_error, cmap='hot', interpolation='bilinear')
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Average Pixel Error', rotation=270, labelpad=20)
+    
+    ax.set_title('Average Spatial Error Distribution', fontsize=14)
+    ax.set_xlabel('Width (pixels)')
+    ax.set_ylabel('Height (pixels)')
+    
+    plt.tight_layout()
+    output_path_obj = os.path.splitext(output_path)[0]
+    spatial_path = f"{output_path_obj}_spatial_error.png"
+    plt.savefig(spatial_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Spatial error map saved to: {spatial_path}")
+
+
 def average_metric_with_mask(metric_name: str, pred: np.ndarray, gt: np.ndarray, m: np.ndarray) -> float:
     # pred, gt: (T, H, W, 3) uint8; m: (T, H, W) bool
     # For MSE/MAE compute over ROI pixels only; For PSNR/SSIM average per-frame computed on masked frames
@@ -777,6 +978,7 @@ def evaluate_one_batch(
     args: wm_orca_args,
     horizon_seconds: int,
     seg_rgba: Optional[np.ndarray] = None,
+    save_sample_path: Optional[str] = None,
 ) -> Dict[str, float]:
     # Prepare current frame and history latents and actions
     device = accelerator.device
@@ -858,6 +1060,43 @@ def evaluate_one_batch(
     gt_frames = decode_latents(gt_latents)
     pred_frames = decode_latents(pred_latents)
 
+    # Align frames for comparison (future frames only)
+    gt_future = gt_frames[args.num_history:args.num_history + pred_frames.shape[0]]
+    min_len = min(gt_future.shape[0], pred_frames.shape[0])
+    gt_future = gt_future[:min_len]
+    pred_frames_aligned = pred_frames[:min_len]
+
+    # Save visualization video if requested
+    if save_sample_path is not None and mediapy is not None:
+        # Stack GT (top) and Pred (bottom)
+        combined = np.concatenate([gt_future, pred_frames_aligned], axis=1)
+        os.makedirs(os.path.dirname(save_sample_path), exist_ok=True)
+        mediapy.write_video(save_sample_path, combined, fps=args.fps)
+        
+        # Generate error heatmaps and statistics for this sample
+        print(f"Generating error heatmaps for sample...")
+        
+        # Calculate pixel errors (MSE and MAE)
+        errors_mse = calculate_pixel_error(gt_future, pred_frames_aligned, error_type='mse')
+        errors_mae = calculate_pixel_error(gt_future, pred_frames_aligned, error_type='mae')
+        
+        # Generate heatmap evolution animations
+        base_path = os.path.splitext(save_sample_path)[0]
+        
+        # MSE heatmap evolution
+        plot_heatmap_evolution(errors_mse, base_path, fps=args.fps, cmap='hot', interval=100)
+        
+        # MAE heatmap evolution
+        mae_base = f"{base_path}_mae"
+        plot_heatmap_evolution(errors_mae, mae_base, fps=args.fps, cmap='hot', interval=100)
+        
+        # Error statistics plots
+        plot_error_statistics(errors_mse, base_path)
+        
+        # Spatial error maps (MSE and MAE)
+        plot_spatial_error_map(errors_mse, base_path)
+        plot_spatial_error_map(errors_mae, mae_base)
+
     # Basic metrics (whole frame)
     # we only compare the future frames since the history frames are not predicted
     base = compute_basic_metrics(pred_frames, gt_frames[args.num_history:])
@@ -877,6 +1116,12 @@ def evaluate_one_batch(
             all_known |= np.all(seg_t == c, axis=-1)
         hand_mask = ~all_known
         background_mask = ~(object_mask | hand_mask)
+
+        # save an image of the masks
+        mask_image = np.concatenate([hand_mask, object_mask, background_mask], axis=1)
+        plt.imshow(mask_image[0])
+        plt.savefig(os.path.join(os.path.dirname(save_sample_path), "masks.png"))
+        plt.close()
 
         for name, mask in [("hand", hand_mask), ("object", object_mask), ("background", background_mask)]:
             for k in ("mse", "mae", "psnr", "ssim"):
@@ -954,25 +1199,34 @@ def evaluate_dataset_for_checkpoint(
                     elif isinstance(seg_data, np.ndarray):
                         seg_rgba = seg_data[0] if seg_data.ndim > 1 else seg_data
 
-                    print(f"Evaluating horizon: {horizon}s")
-                    # Adjust args for horizon and reset peak memory before call
-                    args.num_frames = int(args.fps * horizon)
-                    args.num_frames = max(1, args.num_frames)
-                    torch.cuda.reset_peak_memory_stats() if torch.cuda.is_available() else None
-                    start = time.time()
+                print(f"Evaluating horizon: {horizon}s")
+                # Adjust args for horizon and reset peak memory before call
+                args.num_frames = int(args.fps * horizon)
+                args.num_frames = max(1, args.num_frames)
+                torch.cuda.reset_peak_memory_stats() if torch.cuda.is_available() else None
+                start = time.time()
 
-                    out = evaluate_one_batch(model, accelerator, batch, args, horizon_seconds=horizon, seg_rgba=seg_rgba)
+                sample_path = os.path.join(save_dir, "samples", f"h{horizon}s_sample{i}.mp4")
+                out = evaluate_one_batch(
+                    model,
+                    accelerator,
+                    batch,
+                    args,
+                    horizon_seconds=horizon,
+                    seg_rgba=seg_rgba,
+                    save_sample_path=sample_path,
+                )
 
-                    # aggregate
-                    for k, v in out.items():
-                        metrics_agg[horizon].setdefault(k, []).append(v)
+                # aggregate
+                for k, v in out.items():
+                    metrics_agg[horizon].setdefault(k, []).append(v)
 
-                    # record VRAM
-                    if torch.cuda.is_available():
-                        peak = torch.cuda.max_memory_allocated()
-                        vram_stats[horizon].append(int(peak))
+                # record VRAM
+                if torch.cuda.is_available():
+                    peak = torch.cuda.max_memory_allocated()
+                    vram_stats[horizon].append(int(peak))
 
-                    _ = time.time() - start
+                _ = time.time() - start
 
     # reduce to means
     summary = {}
@@ -1008,44 +1262,44 @@ def main():
         "action_encoder_size_test": {
             "test_tags": [
                 "action_encoder_size_test_1024_sine",
-                # "action_encoder_size_test_2x2048_sine",
-                # "action_encoder_size_test_4x1024_sine",
-                # "action_encoder_size_test_1024_random",
-                # "action_encoder_size_test_2x1024_random",
-                # "action_encoder_size_test_4x4096_random",
+                "action_encoder_size_test_2x2048_sine",
+                "action_encoder_size_test_4x1024_sine",
+                "action_encoder_size_test_1024_random",
+                "action_encoder_size_test_2x1024_random",
+                "action_encoder_size_test_4x4096_random",
             ],
             "test_dataset_path": "/data/faive_lab/datasets/converted_to_lerobot/2026-01-08T09-53-35/fixed_ee_moving_fingers_lowres_test_dataset",
         },
-        # "hand_weighting_test": {
-        #     "test_tags": [
-        #         "hand_weighting_test_1.0",
-        #         "hand_weighting_test_2.0",
-        #         "hand_weighting_test_3.0",
-        #     ],
-        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        # },
-        # "ee_vs_finger_test": {
-        #     "test_tags": [
-        #         "ee_vs_finger_test_fixed_ee",
-        #         "ee_vs_finger_test_relative_ee",
-        #     ],
-        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        # },
-        # "finger_motion_type_test": {
-        #     "test_tags": [
-        #         "finger_motion_type_test_sine",
-        #         "finger_motion_type_test_random",
-        #         "finger_motion_type_test_human",
-        #     ],
-        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        # },
-        # "open_close_scalar_vs_full": {
-        #     "test_tags": [
-        #         "open_close_scalar_vs_full_scalar",
-        #         "open_close_scalar_vs_full_all_finger",
-        #     ],
-        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        # },
+        "hand_weighting_test": {
+            "test_tags": [
+                "hand_weighting_test_1.0",
+                "hand_weighting_test_2.0",
+                "hand_weighting_test_3.0",
+            ],
+            "test_dataset_path": "datasets/2025-12-24T01-20-32",
+        },
+        "ee_vs_finger_test": {
+            "test_tags": [
+                "ee_vs_finger_test_fixed_ee",
+                "ee_vs_finger_test_relative_ee",
+            ],
+            "test_dataset_path": "datasets/2025-12-24T01-20-32",
+        },
+        "finger_motion_type_test": {
+            "test_tags": [
+                "finger_motion_type_test_sine",
+                "finger_motion_type_test_random",
+                "finger_motion_type_test_human",
+            ],
+            "test_dataset_path": "datasets/2025-12-24T01-20-32",
+        },
+        "open_close_scalar_vs_full": {
+            "test_tags": [
+                "open_close_scalar_vs_full_scalar",
+                "open_close_scalar_vs_full_all_finger",
+            ],
+            "test_dataset_path": "datasets/2025-12-24T01-20-32",
+        },
     }
 
     all_results: Dict[str, List[Dict]] = {}
@@ -1093,10 +1347,53 @@ def main():
                 group_results.append(res)
         all_results[group_name] = group_results
 
-    # Save global summary
+    # Save global summary and generate comparison plots
     os.makedirs(args_cli.analysis_root, exist_ok=True)
-    with open(os.path.join(args_cli.analysis_root, "overall_summary.json"), "w") as f:
+    overall_path = os.path.join(args_cli.analysis_root, "overall_summary.json")
+    with open(overall_path, "w") as f:
         json.dump(all_results, f, indent=2)
+
+    # Flatten results for plotting
+    rows = []
+    for group_name, group_results in all_results.items():
+        for res in group_results:
+            tag = res.get("resolved_tag", "")
+            ckpt = os.path.basename(res.get("ckpt", ""))
+            metrics = res.get("metrics", {})
+            for horizon, metric_dict in metrics.items():
+                for k, v in metric_dict.items():
+                    rows.append({
+                        "group": group_name,
+                        "tag": tag,
+                        "checkpoint": ckpt,
+                        "horizon_s": horizon,
+                        "metric": k,
+                        "value": v,
+                    })
+    if rows:
+        df = pd.DataFrame(rows)
+        csv_path = os.path.join(args_cli.analysis_root, "metrics_summary.csv")
+        df.to_csv(csv_path, index=False)
+
+        # Plot per-horizon, per-metric comparisons across tags/checkpoints
+        metrics_to_plot = sorted(df["metric"].unique())
+        for horizon in sorted(df["horizon_s"].unique()):
+            df_h = df[df["horizon_s"] == horizon]
+            for metric in metrics_to_plot:
+                df_m = df_h[df_h["metric"] == metric]
+                if df_m.empty:
+                    continue
+                plt.figure(figsize=(12, 6))
+                labels = df_m.apply(lambda r: f"{r['tag']}\\n{r['checkpoint']}", axis=1)
+                plt.bar(labels, df_m["value"])
+                plt.title(f"{metric} @ {horizon}s")
+                plt.ylabel(metric)
+                plt.xticks(rotation=45, ha="right")
+                plt.tight_layout()
+                plot_dir = os.path.join(args_cli.analysis_root, "plots")
+                os.makedirs(plot_dir, exist_ok=True)
+                plt.savefig(os.path.join(plot_dir, f"{metric}_h{horizon}s.png"))
+                plt.close()
 
     print(f"Saved analysis under: {args_cli.analysis_root}")
 
