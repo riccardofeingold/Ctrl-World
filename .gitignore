@@ -21,3 +21,4 @@ lerobot_dataset/*
 *_analysis/*
 **/test_example_object_hand_centric
 .env
+.history/*
