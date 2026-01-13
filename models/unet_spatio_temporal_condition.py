@@ -442,8 +442,10 @@ class UNetSpatioTemporalConditionModel(ModelMixin, ConfigMixin, UNet2DConditionL
         ############################# newly added to support frame_level pose conditioning ########################################
         # print('new one!!!!!!!!!')
         if not frame_level_cond:
+            # repeat the encoder_hidden_states for each frame
             encoder_hidden_states = encoder_hidden_states.repeat_interleave(num_frames, dim=0)
         else:
+            # reshape the encoder_hidden_states to [batch * frames, 1, channels]
             encoder_hidden_states = encoder_hidden_states.reshape(batch_size * num_frames, -1, encoder_hidden_states.shape[-1])
         ############################################################################################################################
 

@@ -77,15 +77,44 @@ except Exception:
     animation = None
 
 # =============================================================================
-# Configuration for segmentation classes (pixel colors as RGBA)
+# Configuration for segmentation classes (pixel colors as RGB)
 # Hand is defined as "everything not in these classes"
 # =============================================================================
-SEMANTIC_SEGMENTATION_MAPPING: Dict[str, Tuple[int, int, int, int]] = {
-    "class:object": (0, 0, 255, 255),
-    "class:robot": (0, 255, 0, 255),
-    "class:ground": (255, 0, 0, 255),
-    "class:table": (255, 255, 0, 255),
+SEMANTIC_SEGMENTATION_MAPPING: Dict[str, Tuple[int, int, int]] = {
+    "class:object": (0, 0, 255),
+    "class:robot": (0, 255, 0),
+    "class:ground": (255, 0, 0),
+    "class:table": (255, 255, 0),
+    "class:background": (0, 0, 0),
 }
+
+
+def find_closest_color_mask(seg_rgb: np.ndarray, target_color: Tuple[int, int, int], color_threshold: float = 15.0) -> np.ndarray:
+    """
+    Find pixels in segmentation RGB that match the target color within a threshold.
+    
+    Uses Euclidean distance in RGB space to handle video compression artifacts.
+    
+    Args:
+        seg_rgb: Segmentation RGB array (T, H, W, 3) or (H, W, 3) uint8
+        target_color: Target RGB color (R, G, B) as tuple
+        color_threshold: Maximum Euclidean distance in RGB space to consider a match (default: 15.0)
+    
+    Returns:
+        Boolean mask (T, H, W) or (H, W) indicating pixels matching the target color
+    """
+    seg = seg_rgb.astype(np.float32)  # Convert to float for distance calculation
+    target = np.array(target_color, dtype=np.float32)
+    
+    # Calculate Euclidean distance in RGB space
+    # seg: (T, H, W, 3) or (H, W, 3), target: (3,)
+    # Broadcasting: subtract target from each pixel
+    diff = seg - target  # (T, H, W, 3) or (H, W, 3)
+    distances = np.linalg.norm(diff, axis=-1)  # (T, H, W) or (H, W)
+    
+    # Threshold: pixels with distance <= threshold are considered matches
+    mask = distances <= color_threshold
+    return mask.astype(bool)
 
 
 def find_experiment_config_by_name(experiments_dir: str, experiment_name: str) -> Optional[str]:
@@ -330,16 +359,14 @@ def resize_mask_to(frames: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return mb[:, 0]
 
 
-def build_roi_masks_from_seg(seg_rgba: np.ndarray) -> Dict[str, np.ndarray]:
-    # seg_rgba: (T, H, W, 4) uint8
-    seg = seg_rgba
-    h, w = seg.shape[1], seg.shape[2]
-    Tn = seg.shape[0]
-    # Flatten to compare colors
-    flat = seg.reshape(Tn, h * w, 4)
-    obj_color = np.array(SEMANTIC_SEGMENTATION_MAPPING["class:object"], dtype=np.uint8)[None, None, :]
-    class_mask_obj = np.all(flat == obj_color, axis=-1).reshape(Tn, h, w)
-    # background: not object and not hand; we define hand later; for now background = not object, will be refined by caller
+def build_roi_masks_from_seg(seg_rgb: np.ndarray, color_threshold: float = 15.0) -> Dict[str, np.ndarray]:
+    # seg_rgb: (T, H, W, 3) uint8
+    seg = seg_rgb.astype(np.uint8)  # Ensure uint8 dtype
+    
+    # Extract object color and use closest color matching
+    object_color = SEMANTIC_SEGMENTATION_MAPPING["class:object"]
+    class_mask_obj = find_closest_color_mask(seg, object_color, color_threshold=color_threshold)
+    
     return {
         "object": class_mask_obj,
     }
@@ -552,22 +579,23 @@ class TestDataset:
         return selected
     
     def _load_segmentation_video(self, seg_path: str, frame_ids: List[int]) -> Optional[np.ndarray]:
-        """Load segmentation video and extract RGBA frames"""
+        """Load segmentation video and extract RGB frames"""
         if not os.path.exists(seg_path):
             return None
         
         try:
             video = self._load_video(seg_path)
+            print(f"Segmentation video shape: {video.shape}")
             # Downsample temporally
             video = video[::self.rgb_skip]
             # Select frames (adjust for downsampling)
             frame_ids_downsampled = [min(fid // self.rgb_skip, len(video) - 1) for fid in frame_ids]
             selected = video[frame_ids_downsampled]
-            # Ensure RGBA (4 channels)
-            if selected.shape[-1] == 3:
-                # Add alpha channel
-                alpha = np.ones((*selected.shape[:-1], 1), dtype=selected.dtype) * 255
-                selected = np.concatenate([selected, alpha], axis=-1)
+            # Ensure RGB (3 channels) - take only first 3 channels if more exist
+            if selected.shape[-1] > 3:
+                selected = selected[..., :3]
+            elif selected.shape[-1] < 3:
+                raise ValueError(f"Segmentation video has {selected.shape[-1]} channels, expected 3")
             return selected.astype(np.uint8)
         except Exception as e:
             print(f"Warning: Could not load segmentation video {seg_path}: {e}")
@@ -732,7 +760,7 @@ class TestDataset:
         
         # Load segmentation if available
         seg_path = os.path.join(self.dataset_root, "videos", str(traj_id), "0_segmentation.mp4")
-        seg_rgba = self._load_segmentation_video(seg_path, frame_ids)
+        seg_rgb = self._load_segmentation_video(seg_path, frame_ids)
         
         # Prepare data dict
         data = {
@@ -742,8 +770,8 @@ class TestDataset:
             "episode_id": traj_id,
         }
         
-        if seg_rgba is not None:
-            data["seg_rgba"] = seg_rgba
+        if seg_rgb is not None:
+            data["seg_rgb"] = seg_rgb
         
         return data
 
@@ -977,7 +1005,7 @@ def evaluate_one_batch(
     batch: Dict,
     args: wm_orca_args,
     horizon_seconds: int,
-    seg_rgba: Optional[np.ndarray] = None,
+    seg_rgb: Optional[np.ndarray] = None,
     save_sample_path: Optional[str] = None,
 ) -> Dict[str, float]:
     # Prepare current frame and history latents and actions
@@ -1101,26 +1129,72 @@ def evaluate_one_batch(
     # we only compare the future frames since the history frames are not predicted
     base = compute_basic_metrics(pred_frames, gt_frames[args.num_history:])
 
-    # ROI masks if segmentation RGBA available
+    # ROI masks if segmentation RGB available
     roi_results: Dict[str, float] = {}
-    if seg_rgba is not None and seg_rgba.shape[0] >= gt_frames.shape[0]:
+    if seg_rgb is not None and seg_rgb.shape[0] >= gt_frames.shape[0]:
         # Align time window
-        seg_t = seg_rgba[: gt_frames.shape[0]]
-        # Build object mask
-        roi_masks = build_roi_masks_from_seg(seg_t)
+        seg_t = seg_rgb[: gt_frames.shape[0]]
+        
+        # Debug: Print unique colors in first frame to verify segmentation format
+        if seg_t.shape[0] > 0:
+            unique_colors = np.unique(seg_t[0].reshape(-1, 3), axis=0)
+            print(f"Debug: Found {len(unique_colors)} unique colors in first segmentation frame")
+            print(f"Debug: Sample colors (first 5): {unique_colors[:5]}")
+            print(f"Debug: Expected object color: {SEMANTIC_SEGMENTATION_MAPPING['class:object']}")
+        
+        # Ensure seg_t is uint8
+        seg_t = seg_t.astype(np.uint8)
+        
+        # Build object mask using closest color matching
+        color_threshold = 15.0  # Euclidean distance threshold in RGB space
+        roi_masks = build_roi_masks_from_seg(seg_t, color_threshold=color_threshold)
         object_mask = roi_masks["object"]
+        
         # Hand = not in mapping classes; define as not object and not robot/ground/table
-        all_known = np.zeros_like(object_mask)
-        for _, color in SEMANTIC_SEGMENTATION_MAPPING.items():
-            c = np.array(color, dtype=np.uint8)[None, None, :]
-            all_known |= np.all(seg_t == c, axis=-1)
+        # Use closest color matching to handle video compression artifacts
+        all_known = np.zeros_like(object_mask, dtype=bool)
+        for class_name, color in SEMANTIC_SEGMENTATION_MAPPING.items():
+            if "hand" not in class_name:  # Skip hand since it's derived from what's not in mapping
+                mask = find_closest_color_mask(seg_t, color, color_threshold=color_threshold)
+                all_known |= mask
+        
         hand_mask = ~all_known
         background_mask = ~(object_mask | hand_mask)
+        
+        # Debug: Print mask statistics
+        print(f"Debug: object_mask pixels: {np.sum(object_mask)} / {object_mask.size} ({100*np.mean(object_mask):.1f}%)")
+        print(f"Debug: hand_mask pixels: {np.sum(hand_mask)} / {hand_mask.size} ({100*np.mean(hand_mask):.1f}%)")
+        print(f"Debug: background_mask pixels: {np.sum(background_mask)} / {background_mask.size} ({100*np.mean(background_mask):.1f}%)")
 
-        # save an image of the masks
-        mask_image = np.concatenate([hand_mask, object_mask, background_mask], axis=1)
-        plt.imshow(mask_image[0])
-        plt.savefig(os.path.join(os.path.dirname(save_sample_path), "masks.png"))
+        # save an image of the masks - FIXED: convert to uint8 for proper visualization
+        # Convert boolean masks to uint8 (0 or 255) for proper visualization
+        hand_vis = (hand_mask[0].astype(np.uint8) * 255)
+        object_vis = (object_mask[0].astype(np.uint8) * 255)
+        background_vis = (background_mask[0].astype(np.uint8) * 255)
+        
+        # Concatenate along width (axis=1) to place masks side by side
+        mask_image = np.concatenate([hand_vis, object_vis, background_vis], axis=1)  # axis=1 is width for 2D array
+        
+        # Create a figure with subplots for better visualization
+        fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+        axes[0].imshow(hand_vis, cmap='gray')
+        axes[0].set_title('Hand Mask')
+        axes[0].axis('off')
+        
+        axes[1].imshow(object_vis, cmap='gray')
+        axes[1].set_title('Object Mask')
+        axes[1].axis('off')
+        
+        axes[2].imshow(background_vis, cmap='gray')
+        axes[2].set_title('Background Mask')
+        axes[2].axis('off')
+        
+        axes[3].imshow(mask_image, cmap='gray')
+        axes[3].set_title('All Masks Combined')
+        axes[3].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(os.path.dirname(save_sample_path), "masks.png"), dpi=150, bbox_inches='tight')
         plt.close()
 
         for name, mask in [("hand", hand_mask), ("object", object_mask), ("background", background_mask)]:
@@ -1188,16 +1262,16 @@ def evaluate_dataset_for_checkpoint(
                 if max_batches is not None and i >= max_batches:
                     break
 
-                # Extract segmentation RGBA from batch if available (from TestDataset)
-                seg_rgba = None
-                if "seg_rgba" in batch:
-                    seg_data = batch["seg_rgba"]
+                # Extract segmentation RGB from batch if available (from TestDataset)
+                seg_rgb = None
+                if "seg_rgb" in batch:
+                    seg_data = batch["seg_rgb"]
                     if isinstance(seg_data, (list, tuple)) and len(seg_data) > 0:
-                        seg_rgba = seg_data[0] if isinstance(seg_data[0], np.ndarray) else seg_data[0].numpy()
+                        seg_rgb = seg_data[0] if isinstance(seg_data[0], np.ndarray) else seg_data[0].numpy()
                     elif isinstance(seg_data, torch.Tensor):
-                        seg_rgba = seg_data[0].numpy() if seg_data.dim() > 1 else seg_data.numpy()
+                        seg_rgb = seg_data[0].numpy() if seg_data.dim() > 1 else seg_data.numpy()
                     elif isinstance(seg_data, np.ndarray):
-                        seg_rgba = seg_data[0] if seg_data.ndim > 1 else seg_data
+                        seg_rgb = seg_data[0] if seg_data.ndim > 1 else seg_data
 
                 print(f"Evaluating horizon: {horizon}s")
                 # Adjust args for horizon and reset peak memory before call
@@ -1213,7 +1287,7 @@ def evaluate_dataset_for_checkpoint(
                     batch,
                     args,
                     horizon_seconds=horizon,
-                    seg_rgba=seg_rgba,
+                    seg_rgb=seg_rgb,
                     save_sample_path=sample_path,
                 )
 
@@ -1262,44 +1336,44 @@ def main():
         "action_encoder_size_test": {
             "test_tags": [
                 "action_encoder_size_test_1024_sine",
-                "action_encoder_size_test_2x2048_sine",
-                "action_encoder_size_test_4x1024_sine",
-                "action_encoder_size_test_1024_random",
-                "action_encoder_size_test_2x1024_random",
-                "action_encoder_size_test_4x4096_random",
+                # "action_encoder_size_test_2x2048_sine",
+                # "action_encoder_size_test_4x1024_sine",
+                # "action_encoder_size_test_1024_random",
+                # "action_encoder_size_test_2x1024_random",
+                # "action_encoder_size_test_4x4096_random",
             ],
             "test_dataset_path": "/data/faive_lab/datasets/converted_to_lerobot/2026-01-08T09-53-35/fixed_ee_moving_fingers_lowres_test_dataset",
         },
-        "hand_weighting_test": {
-            "test_tags": [
-                "hand_weighting_test_1.0",
-                "hand_weighting_test_2.0",
-                "hand_weighting_test_3.0",
-            ],
-            "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        },
-        "ee_vs_finger_test": {
-            "test_tags": [
-                "ee_vs_finger_test_fixed_ee",
-                "ee_vs_finger_test_relative_ee",
-            ],
-            "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        },
-        "finger_motion_type_test": {
-            "test_tags": [
-                "finger_motion_type_test_sine",
-                "finger_motion_type_test_random",
-                "finger_motion_type_test_human",
-            ],
-            "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        },
-        "open_close_scalar_vs_full": {
-            "test_tags": [
-                "open_close_scalar_vs_full_scalar",
-                "open_close_scalar_vs_full_all_finger",
-            ],
-            "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        },
+        # "hand_weighting_test": {
+        #     "test_tags": [
+        #         "hand_weighting_test_1.0",
+        #         "hand_weighting_test_2.0",
+        #         "hand_weighting_test_3.0",
+        #     ],
+        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
+        # },
+        # "ee_vs_finger_test": {
+        #     "test_tags": [
+        #         "ee_vs_finger_test_fixed_ee",
+        #         "ee_vs_finger_test_relative_ee",
+        #     ],
+        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
+        # },
+        # "finger_motion_type_test": {
+        #     "test_tags": [
+        #         "finger_motion_type_test_sine",
+        #         "finger_motion_type_test_random",
+        #         "finger_motion_type_test_human",
+        #     ],
+        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
+        # },
+        # "open_close_scalar_vs_full": {
+        #     "test_tags": [
+        #         "open_close_scalar_vs_full_scalar",
+        #         "open_close_scalar_vs_full_all_finger",
+        #     ],
+        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
+        # },
     }
 
     all_results: Dict[str, List[Dict]] = {}
