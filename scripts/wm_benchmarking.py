@@ -1307,8 +1307,8 @@ def evaluate_dataset_for_checkpoint(
     for horizon, kv in metrics_agg.items():
         summary[horizon] = {k: float(np.nanmean(vs)) if len(vs) > 0 else float("nan") for k, vs in kv.items()}
         if vram_stats[horizon]:
-            summary[horizon]["peak_vram_bytes_mean"] = float(np.mean(vram_stats[horizon]))
-            summary[horizon]["peak_vram_bytes_max"] = float(np.max(vram_stats[horizon]))
+            summary[horizon]["peak_vram_bytes_mean"] = float(np.mean(vram_stats[horizon])) / (1024 ** 3)
+            summary[horizon]["peak_vram_bytes_max"] = float(np.max(vram_stats[horizon])) / (1024 ** 3)
 
     # save summary
     with open(os.path.join(save_dir, "summary.json"), "w") as f:
@@ -1380,6 +1380,8 @@ def main():
     for group_name, group_tags in groups.items():
         group_results = []
         test_dataset_path = group_tags["test_dataset_path"]
+        analysis_root = os.path.join(args_cli.analysis_root, group_name)
+        os.makedirs(analysis_root, exist_ok=True)
         for tag in group_tags["test_tags"]:
             resolved_tag, resolved_args, resolved_yaml = resolve_ckpt_tag_and_args(
                 name_or_tag=tag,
@@ -1403,13 +1405,13 @@ def main():
                     os.path.exists(os.path.join(test_dataset_path, "annotation")) and
                     os.path.exists(os.path.join(test_dataset_path, "videos"))
                 )
-                
+
                 res = evaluate_dataset_for_checkpoint(
                     tag=resolved_tag,
                     args=resolved_args,
                     ckpt_path=ckpt,
                     dataset_root=test_dataset_path,
-                    analysis_root=args_cli.analysis_root,
+                    analysis_root=analysis_root,
                     horizons_s=[args_cli.short_horizon_s, args_cli.long_horizon_s],
                     max_batches=args_cli.max_batches,
                     use_test_dataset=use_test_dataset,
@@ -1421,55 +1423,18 @@ def main():
                 group_results.append(res)
         all_results[group_name] = group_results
 
-    # Save global summary and generate comparison plots
-    os.makedirs(args_cli.analysis_root, exist_ok=True)
-    overall_path = os.path.join(args_cli.analysis_root, "overall_summary.json")
-    with open(overall_path, "w") as f:
+        # Save global summary and generate comparison plots
+        os.makedirs(args_cli.analysis_root, exist_ok=True)
+        overall_path = os.path.join(args_cli.analysis_root, f"{group_name}_overall_summary.json")
+        with open(overall_path, "w") as f:
+            json.dump(group_results, f, indent=2)
+
+        print(f"Saved analysis under: {analysis_root}")
+    
+    summary_path = os.path.join(args_cli.analysis_root, "overall_summary.json")
+    with open(summary_path, "w") as f:
         json.dump(all_results, f, indent=2)
-
-    # Flatten results for plotting
-    rows = []
-    for group_name, group_results in all_results.items():
-        for res in group_results:
-            tag = res.get("resolved_tag", "")
-            ckpt = os.path.basename(res.get("ckpt", ""))
-            metrics = res.get("metrics", {})
-            for horizon, metric_dict in metrics.items():
-                for k, v in metric_dict.items():
-                    rows.append({
-                        "group": group_name,
-                        "tag": tag,
-                        "checkpoint": ckpt,
-                        "horizon_s": horizon,
-                        "metric": k,
-                        "value": v,
-                    })
-    if rows:
-        df = pd.DataFrame(rows)
-        csv_path = os.path.join(args_cli.analysis_root, "metrics_summary.csv")
-        df.to_csv(csv_path, index=False)
-
-        # Plot per-horizon, per-metric comparisons across tags/checkpoints
-        metrics_to_plot = sorted(df["metric"].unique())
-        for horizon in sorted(df["horizon_s"].unique()):
-            df_h = df[df["horizon_s"] == horizon]
-            for metric in metrics_to_plot:
-                df_m = df_h[df_h["metric"] == metric]
-                if df_m.empty:
-                    continue
-                plt.figure(figsize=(12, 6))
-                labels = df_m.apply(lambda r: f"{r['tag']}\\n{r['checkpoint']}", axis=1)
-                plt.bar(labels, df_m["value"])
-                plt.title(f"{metric} @ {horizon}s")
-                plt.ylabel(metric)
-                plt.xticks(rotation=45, ha="right")
-                plt.tight_layout()
-                plot_dir = os.path.join(args_cli.analysis_root, "plots")
-                os.makedirs(plot_dir, exist_ok=True)
-                plt.savefig(os.path.join(plot_dir, f"{metric}_h{horizon}s.png"))
-                plt.close()
-
-    print(f"Saved analysis under: {args_cli.analysis_root}")
+    print(f"Saved overall summary under: {summary_path}")
 
 
 if __name__ == "__main__":
