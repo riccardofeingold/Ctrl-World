@@ -27,9 +27,6 @@ from dataset.dataset_orca import Dataset_mix
 from models.ctrl_world import CrtlWorld
 from models.pipeline_ctrl_world import CtrlWorldDiffusionPipeline
 
-from dotenv import load_dotenv
-load_dotenv()
-
 # For video processing and latent extraction
 try:
     import mediapy
@@ -969,6 +966,99 @@ def plot_spatial_error_map(errors: np.ndarray, output_path: str):
     print(f"Spatial error map saved to: {spatial_path}")
 
 
+def plot_actions(actions: np.ndarray, output_path: str, fps: float = 30.0):
+    """
+    Plot actions used as input to the model.
+    
+    Args:
+        actions: Action array of shape (F, action_dim) or (B, F, action_dim)
+                 First 6 dimensions are relative poses (xyz + orientation)
+                 Remaining dimensions are absolute joint angles in radians
+        output_path: Path to save the plot
+        fps: Frames per second for time axis conversion
+    """
+    # Handle batch dimension
+    if actions.ndim == 3:
+        actions = actions[0]  # Take first batch: (F, action_dim)
+    
+    num_frames, action_dim = actions.shape
+    time_axis = np.arange(num_frames) / fps  # Convert to seconds
+    
+    # Separate poses (first 6) and joint angles (rest)
+    poses = actions[:, :6]  # (F, 6)
+    joint_angles = actions[:, 6:] if action_dim > 6 else np.array([]).reshape(num_frames, 0)  # (F, num_joints)
+    
+    # Create figure with subplots
+    if joint_angles.shape[1] > 0:
+        fig = plt.figure(figsize=(16, 10))
+        gs = fig.add_gridspec(3, 1, height_ratios=[1, 1, 1.5], hspace=0.3)
+    else:
+        fig = plt.figure(figsize=(16, 8))
+        gs = fig.add_gridspec(2, 1, height_ratios=[1, 1], hspace=0.3)
+    
+    # Plot 1: Position (xyz)
+    ax_pos = fig.add_subplot(gs[0, 0])
+    ax_pos.plot(time_axis, poses[:, 0], label='X', linewidth=1.5, alpha=0.8)
+    ax_pos.plot(time_axis, poses[:, 1], label='Y', linewidth=1.5, alpha=0.8)
+    ax_pos.plot(time_axis, poses[:, 2], label='Z', linewidth=1.5, alpha=0.8)
+    ax_pos.set_title('Relative Position (first 3 dimensions)', fontsize=12, fontweight='bold')
+    ax_pos.set_xlabel('Time (s)')
+    ax_pos.set_ylabel('Position')
+    ax_pos.legend(loc='best')
+    ax_pos.grid(True, alpha=0.3)
+    
+    # Plot 2: Orientation (next 3)
+    ax_orient = fig.add_subplot(gs[1, 0])
+    ax_orient.plot(time_axis, poses[:, 3], label='Orientation dim 1', linewidth=1.5, alpha=0.8)
+    ax_orient.plot(time_axis, poses[:, 4], label='Orientation dim 2', linewidth=1.5, alpha=0.8)
+    ax_orient.plot(time_axis, poses[:, 5], label='Orientation dim 3', linewidth=1.5, alpha=0.8)
+    ax_orient.set_title('Relative Orientation (dimensions 4-6)', fontsize=12, fontweight='bold')
+    ax_orient.set_xlabel('Time (s)')
+    ax_orient.set_ylabel('Orientation')
+    ax_orient.legend(loc='best')
+    ax_orient.grid(True, alpha=0.3)
+    
+    # Plot 3: Joint angles
+    if joint_angles.shape[1] > 0:
+        ax_joints = fig.add_subplot(gs[2, 0])
+        num_joints = joint_angles.shape[1]
+        
+        # Use colormap for many joints
+        if num_joints <= 20:
+            # Plot each joint separately with different colors
+            colors = plt.cm.get_cmap('tab20')(np.linspace(0, 1, 20))
+            for i in range(num_joints):
+                color_idx = i % 20
+                ax_joints.plot(time_axis, joint_angles[:, i], label=f'Joint {i}', 
+                              linewidth=1.5, alpha=0.7, color=colors[color_idx])
+        else:
+            # Too many joints - plot all together with colormap
+            for i in range(num_joints):
+                ax_joints.plot(time_axis, joint_angles[:, i], linewidth=1, alpha=0.5)
+            # Add legend for min/max
+            ax_joints.plot(time_axis, joint_angles[:, 0], label=f'First joint (of {num_joints})', 
+                          linewidth=1.5, alpha=0.8, color='red')
+            ax_joints.plot(time_axis, joint_angles[:, -1], label=f'Last joint (of {num_joints})', 
+                          linewidth=1.5, alpha=0.8, color='blue')
+        
+        ax_joints.set_title(f'Absolute Joint Angles (dimensions 7-{action_dim}) - Radians', 
+                           fontsize=12, fontweight='bold')
+        ax_joints.set_xlabel('Time (s)')
+        ax_joints.set_ylabel('Joint Angle (rad)')
+        ax_joints.legend(loc='best', ncol=2 if num_joints <= 10 else 1, fontsize=8 if num_joints > 10 else 9)
+        ax_joints.grid(True, alpha=0.3)
+    
+    plt.suptitle('Input Actions Over Time', fontsize=14, fontweight='bold', y=0.995)
+    plt.tight_layout()
+    
+    # Save plot
+    output_path_obj = os.path.splitext(output_path)[0]
+    action_plot_path = f"{output_path_obj}_actions.png"
+    plt.savefig(action_plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Action plot saved to: {action_plot_path}")
+
+
 def average_metric_with_mask(metric_name: str, pred: np.ndarray, gt: np.ndarray, m: np.ndarray) -> float:
     # pred, gt: (T, H, W, 3) uint8; m: (T, H, W) bool
     # For MSE/MAE compute over ROI pixels only; For PSNR/SSIM average per-frame computed on masked frames
@@ -1101,6 +1191,11 @@ def evaluate_one_batch(
         os.makedirs(os.path.dirname(save_sample_path), exist_ok=True)
         mediapy.write_video(save_sample_path, combined, fps=args.fps)
         
+        # Plot actions used as input
+        base_path = os.path.splitext(save_sample_path)[0]
+        actions_np = actions.cpu().numpy()  # Convert to numpy: (B, F, action_dim)
+        plot_actions(actions_np, base_path, fps=args.fps)
+        
         # Generate error heatmaps and statistics for this sample
         print(f"Generating error heatmaps for sample...")
         
@@ -1108,9 +1203,7 @@ def evaluate_one_batch(
         errors_mse = calculate_pixel_error(gt_future, pred_frames_aligned, error_type='mse')
         errors_mae = calculate_pixel_error(gt_future, pred_frames_aligned, error_type='mae')
         
-        # Generate heatmap evolution animations
-        base_path = os.path.splitext(save_sample_path)[0]
-        
+        # Generate heatmap evolution animations (base_path already defined above)
         # MSE heatmap evolution
         plot_heatmap_evolution(errors_mse, base_path, fps=args.fps, cmap='hot', interval=100)
         
@@ -1319,6 +1412,14 @@ def evaluate_dataset_for_checkpoint(
 
 def main():
     import argparse
+    from dotenv import load_dotenv
+    
+    # Load environment variables from .env file in project root
+    # Find project root (parent of scripts directory)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    env_path = os.path.join(project_root, '.env')
+    load_dotenv(env_path)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_ckpt_root", type=str, default="model_ckpt")
@@ -1333,48 +1434,72 @@ def main():
     args_cli = parser.parse_args()
 
     groups = {
-        "action_encoder_size_test": {
+        "FPS_tests": {
             "test_tags": [
-                "action_encoder_size_test_1024_sine",
-                # "action_encoder_size_test_2x2048_sine",
-                # "action_encoder_size_test_4x1024_sine",
-                # "action_encoder_size_test_1024_random",
-                # "action_encoder_size_test_2x1024_random",
-                # "action_encoder_size_test_4x4096_random",
+                "data_fix_cam_fixed_ee_sine_object_collisions_10fps",
+                "data_fix_cam_fixed_ee_sine_object_collisions_25fps",
+                "data_fix_cam_fixed_ee_sine_object_collisions_50fps",
             ],
             "test_dataset_path": "/data/faive_lab/datasets/converted_to_lerobot/2026-01-08T09-53-35/fixed_ee_moving_fingers_lowres_test_dataset",
         },
-        # "hand_weighting_test": {
-        #     "test_tags": [
-        #         "hand_weighting_test_1.0",
-        #         "hand_weighting_test_2.0",
-        #         "hand_weighting_test_3.0",
-        #     ],
-        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        # },
-        # "ee_vs_finger_test": {
-        #     "test_tags": [
-        #         "ee_vs_finger_test_fixed_ee",
-        #         "ee_vs_finger_test_relative_ee",
-        #     ],
-        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        # },
-        # "finger_motion_type_test": {
-        #     "test_tags": [
-        #         "finger_motion_type_test_sine",
-        #         "finger_motion_type_test_random",
-        #         "finger_motion_type_test_human",
-        #     ],
-        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        # },
-        # "open_close_scalar_vs_full": {
-        #     "test_tags": [
-        #         "open_close_scalar_vs_full_scalar",
-        #         "open_close_scalar_vs_full_all_finger",
-        #     ],
-        #     "test_dataset_path": "datasets/2025-12-24T01-20-32",
-        # },
+        "hand_weighting_test_moving_ee_and_fingers": {
+            "test_tags": [
+                "weighted_hand_test_moving_finger_and_ee_no_weight",
+                "weighted_hand_test_moving_finger_and_ee_weight_1.5",
+                "weighted_hand_test_moving_finger_and_ee_weight_2.5",
+                "weighted_hand_test_moving_finger_and_ee_weight_5",
+            ],
+            "test_dataset_path": "/data/faive_lab/datasets/converted_to_lerobot/2026-01-08T09-53-35/moving_fingers_and_moving_ee_high_res_test_dataset",
+        },
+        "hand_weighting_test_fixed_ee": {
+            "test_tags": [
+                "weighted_hand_test_moving_finger_but_fixed_ee_no_weight",
+                "weighted_hand_test_moving_finger_but_fixed_ee_weight_1.5",
+                "weighted_hand_test_moving_finger_but_fixed_ee_weight_2.5",
+                "weighted_hand_test_moving_finger_but_fixed_ee_weight_5",
+            ],
+            "test_dataset_path": "/data/faive_lab/datasets/converted_to_lerobot/2026-01-08T09-53-35/fixed_ee_and_moving_fingers_close_to_object_high_res_test_dataset",
+        },
+        "action_encoder_size_test": {
+            "test_tags": [
+                "action_encoder_size_test_1024_sine",
+                "action_encoder_size_test_2x2048_sine",
+                "action_encoder_size_test_4x1024_sine",
+                "action_encoder_size_test_1024_random",
+                "action_encoder_size_test_2x1024_random",
+                "action_encoder_size_test_4x4096_random",
+            ],
+            "test_dataset_path": "/data/faive_lab/datasets/converted_to_lerobot/2026-01-08T09-53-35/fixed_ee_moving_fingers_lowres_test_dataset",
+        },
+        "ee_vs_finger_test": {
+            "test_tags": [
+                "data_fix_cam_fixed_fingers_random_object_locations_10fps",
+            ],
+            "test_dataset_path": "/data/faive_lab/datasets/converted_to_lerobot/2026-01-08T09-53-35/fixed_fingers_and_moving_ee_low_res_test_dataset",
+        },
+        "FPS_tests_high_res": {
+            "test_tags": [
+                "orca_10fps_high_res_sine_object_collision_fixed_ee_fixed_cam",
+                "orca_25fps_highres_sine_object_collision_fixed_ee_fixed_cam",
+                "orca_50fps_highres_sine_object_collision_fixed_ee_fixed_cam",
+            ],
+            "test_dataset_path": "/data/faive_lab/datasets/converted_to_lerobot/2026-01-08T09-53-35/fixed_ee_moving_fingers_high_res_test_dataset",
+        },
     }
+
+    # test if groups are valid
+    # for group_name, group_tags in groups.items():
+    #     try:
+    #         resolved_tag, resolved_args, resolved_yaml = resolve_ckpt_tag_and_args(
+    #             name_or_tag=group_tags["test_tags"][0],
+    #             model_ckpt_root=args_cli.model_ckpt_root,
+    #             dataset_root=group_tags["test_dataset_path"],
+    #             experiments_dir=args_cli.experiments_dir,
+    #         )
+    #     except Exception as e:
+    #         print(f"Error resolving tag {group_tags['test_tags'][0]}: {e}")
+    #         continue
+    #     print(f"Group {group_name} is valid")
 
     all_results: Dict[str, List[Dict]] = {}
     for group_name, group_tags in groups.items():
@@ -1383,44 +1508,49 @@ def main():
         analysis_root = os.path.join(args_cli.analysis_root, group_name)
         os.makedirs(analysis_root, exist_ok=True)
         for tag in group_tags["test_tags"]:
-            resolved_tag, resolved_args, resolved_yaml = resolve_ckpt_tag_and_args(
-                name_or_tag=tag,
-                model_ckpt_root=args_cli.model_ckpt_root,
-                dataset_root=test_dataset_path,
-                experiments_dir=args_cli.experiments_dir,
-            )
-            ckpt_dir = os.path.join(args_cli.model_ckpt_root, resolved_tag)
-            ckpts = select_checkpoints(
-                ckpt_dir,
-                max_ckpts=args_cli.max_ckpts_per_tag,
-                max_iteration=args_cli.max_ckpt_iteration,
-            )
-            for ckpt in ckpts:
-                print(
-                    f"[{group_name}] Evaluating name='{tag}' -> tag='{resolved_tag}' ckpt='{os.path.basename(ckpt)}' ...",
-                    flush=True,
-                )
-                # Detect if dataset_root is a test dataset (has annotation/ and videos/ folders)
-                use_test_dataset = (
-                    os.path.exists(os.path.join(test_dataset_path, "annotation")) and
-                    os.path.exists(os.path.join(test_dataset_path, "videos"))
+            try:
+                resolved_tag, resolved_args, resolved_yaml = resolve_ckpt_tag_and_args(
+                    name_or_tag=tag,
+                    model_ckpt_root=args_cli.model_ckpt_root,
+                    dataset_root=test_dataset_path,
+                    experiments_dir=args_cli.experiments_dir,
                 )
 
-                res = evaluate_dataset_for_checkpoint(
-                    tag=resolved_tag,
-                    args=resolved_args,
-                    ckpt_path=ckpt,
-                    dataset_root=test_dataset_path,
-                    analysis_root=analysis_root,
-                    horizons_s=[args_cli.short_horizon_s, args_cli.long_horizon_s],
-                    max_batches=args_cli.max_batches,
-                    use_test_dataset=use_test_dataset,
+                ckpt_dir = os.path.join(args_cli.model_ckpt_root, resolved_tag)
+                ckpts = select_checkpoints(
+                    ckpt_dir,
+                    max_ckpts=args_cli.max_ckpts_per_tag,
+                    max_iteration=args_cli.max_ckpt_iteration,
                 )
-                res["experiment_name"] = tag
-                res["resolved_tag"] = resolved_tag
-                res["experiment_yaml"] = resolved_yaml
-                res["group"] = group_name
-                group_results.append(res)
+                for ckpt in ckpts:
+                    print(
+                        f"[{group_name}] Evaluating name='{tag}' -> tag='{resolved_tag}' ckpt='{os.path.basename(ckpt)}' ...",
+                        flush=True,
+                    )
+                    # Detect if dataset_root is a test dataset (has annotation/ and videos/ folders)
+                    use_test_dataset = (
+                        os.path.exists(os.path.join(test_dataset_path, "annotation")) and
+                        os.path.exists(os.path.join(test_dataset_path, "videos"))
+                    )
+
+                    res = evaluate_dataset_for_checkpoint(
+                        tag=resolved_tag,
+                        args=resolved_args,
+                        ckpt_path=ckpt,
+                        dataset_root=test_dataset_path,
+                        analysis_root=analysis_root,
+                        horizons_s=[args_cli.short_horizon_s, args_cli.long_horizon_s],
+                        max_batches=args_cli.max_batches,
+                        use_test_dataset=use_test_dataset,
+                    )
+                    res["experiment_name"] = tag
+                    res["resolved_tag"] = resolved_tag
+                    res["experiment_yaml"] = resolved_yaml
+                    res["group"] = group_name
+                    group_results.append(res)
+            except Exception as e:
+                print(f"Error evaluating tag {tag}: {e}")
+                continue
         all_results[group_name] = group_results
 
         # Save global summary and generate comparison plots
