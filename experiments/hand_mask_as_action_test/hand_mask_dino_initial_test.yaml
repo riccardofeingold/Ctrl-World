@@ -1,15 +1,16 @@
 # Base configuration that all experiments inherit from
 # Experiment: 10fps with hand mask
 experiment:
-  experiment_name: ""
-  experiment_description: ""
+  experiment_name: "hand_mask_dino_initial_test_fixed_ee_moving_fingers"
+  experiment_description: "Initial test of hand mask as action"
+  base_config: "../base_config.yaml"  # Reference to base config
   
 # Override base config parameters
 training:
-  tag: ""
+  tag: "hand_mask_dino_initial_test"
   output_dir: "model_ckpt/${training.tag}"
   wandb_run_name: "${experiment.experiment_name}_${training.tag}"
-  wandb_project_name: ""
+  wandb_project_name: "visual_action_encoder_test"
   
   debug: false
   learning_rate: 1e-5
@@ -26,9 +27,10 @@ training:
   video_num: 4
   num_validation_batch: 2
 
+
 dataset:
-  dataset_root_path: ""
-  dataset_names: ""
+  dataset_root_path: "datasets/2026-01-15T17-28-57"
+  dataset_names: "data_working_hand_mask_sine_hand_motions_fixed_ee_10fps"
   dataset_meta_info_path: "dataset_meta_info"
   dataset_cfgs: ${dataset.dataset_names}  # Reference from dataset section
   annotation_name: "annotation"
@@ -41,7 +43,7 @@ dataset:
   max_num_samples: 13000
   use_hand_mask: false
   use_only_hand_actions: false
-  use_only_ee_pose_actions: false
+  use_only_ee_pose_actions: true
   use_average_scalar_hand_action: false
 
 model:
@@ -56,7 +58,7 @@ model:
   hub_dir: "/data/hub"
   dinov2_size: 224
 
-  action_dim: 23
+  action_dim: 6
   action_encoder_hidden_dims: [1024]
   vae_compression_rate: 8
   text_cond: false
@@ -67,14 +69,14 @@ model:
   
   # Training/inference settings
   dtype: "bfloat16"  # Options: "float32", "float16", "bfloat16"
-  hand_weight: 2.5
+  hand_weight: 1.0
   motion_bucket_id: 127
   guidance_scale: 2.0
   num_inference_steps: 50
-  decode_chunk_size: 5
+  decode_chunk_size: 10
   
   # Frame dimensions
   width: 256
   height: 256
-  num_frames: 5
-  num_history: 5
+  num_frames: 10
+  num_history: 10

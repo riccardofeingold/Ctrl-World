@@ -138,6 +138,10 @@ class EncodeLatentDataset(Dataset):
             Downsampled mask tensor of shape (B, 1, target_height, target_width)
         """
         seg_video = mediapy.read_video(seg_video_path)
+        # save the video to the new folder
+        os.makedirs(f"{save_root}/segmentation_videos/{data_type}/{traj_id}", exist_ok=True)
+        mediapy.write_video(f"{save_root}/segmentation_videos/{data_type}/{traj_id}/{video_id}.mp4", seg_video[::rgb_skip], fps=self.args.original_fps / self.args.down_sample)
+
         mask = torch.tensor(seg_video).permute(0, 3, 1, 2)
         mask = torch.sum(mask, dim=-3)  # Keep only one channel for binary mask
         mask = mask.unsqueeze(-1)  # Add channel dimension back
@@ -198,7 +202,7 @@ class EncodeLatentDataset(Dataset):
         os.makedirs(f"{save_root}/latent_videos/{data_type}/{traj_id}", exist_ok=True)
         torch.save(x, f"{save_root}/latent_videos/{data_type}/{traj_id}/{video_id}.pt")
         return len(frames)
-
+    
     def process_traj(self, video_paths, seg_video_paths, traj_info, instruction, save_root,traj_id=0,data_type='val', size=(192,320), rgb_skip=3, device='cuda'):
         if seg_video_paths is not None:
             for video_id, (video_path, seg_video_path) in enumerate(zip(video_paths, seg_video_paths)):
@@ -247,6 +251,11 @@ class EncodeLatentDataset(Dataset):
                 {"latent_video_path": f"latent_segmentation_videos/{data_type}/{traj_id}/0.pt"},
                 {"latent_video_path": f"latent_segmentation_videos/{data_type}/{traj_id}/1.pt"},
                 {"latent_video_path": f"latent_segmentation_videos/{data_type}/{traj_id}/2.pt"},
+            ]
+            info['segmentation_videos'] = [
+                {"video_path": f"segmentation_videos/{data_type}/{traj_id}/0.mp4"},
+                {"video_path": f"segmentation_videos/{data_type}/{traj_id}/1.mp4"},
+                {"video_path": f"segmentation_videos/{data_type}/{traj_id}/2.mp4"},
             ]
 
         os.makedirs(f"{save_root}/annotation/{data_type}", exist_ok=True)

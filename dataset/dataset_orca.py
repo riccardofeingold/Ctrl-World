@@ -17,6 +17,7 @@ from einops import rearrange
 from scipy.spatial.transform import Rotation as R  
 import decord
 import torch.nn.functional as F
+import mediapy
 
 from config import wm_orca_args
 
@@ -97,7 +98,8 @@ class Dataset_mix(Dataset):
             video_path = os.path.join(video_dir,video_path)
             try:
                 frames = self._load_latent_video(video_path, frame_ids)
-            except:
+            except Exception as e:
+                print(f"Error loading video from {video_path}: {e}")
                 video_path = video_path.replace("latent_videos", "latent_videos_svd")
                 frames = self._load_latent_video(video_path, frame_ids)
         return frames
@@ -113,19 +115,30 @@ class Dataset_mix(Dataset):
                 frames = self._load_latent_video(mask_video_path, frame_ids)
             except Exception as e:
                 print(f"Error loading hand mask video from {mask_video_path}: {e}")
-            
+
+            print(f"frames shape: {frames.shape}")
             frames *= self.args.hand_weight
         
         return frames
 
-
     def _get_obs(self, label, frame_ids, cam_id, pre_encode, video_dir):
         if cam_id is None:
-            temp_cam_id = random.choice(self.cam_ids)
+            temp_cam_id = random.choice(range(self.args.num_views))
         else:
             temp_cam_id = cam_id
         frames = self._get_frames(label, frame_ids, cam_id = temp_cam_id, pre_encode = pre_encode, video_dir=video_dir)
         return frames, temp_cam_id
+
+    def _load_segmentation_video_and_normalize(self, label, frame_ids, cam_id, video_dir):
+        video_path = label["segmentation_videos"][cam_id]['video_path']
+        video_path = os.path.join(video_dir,video_path)
+        video = mediapy.read_video(video_path)
+        frames = torch.tensor(video).permute(0, 3, 1, 2).float() / 255.0*2-1
+        max_frames = frames.size()[0]
+        frame_ids =  [int(frame_id) if frame_id < max_frames else max_frames-1 for frame_id in frame_ids]
+        frames = frames[frame_ids]
+        
+        return frames
 
     def normalize_bound(
         self,
@@ -203,7 +216,7 @@ class Dataset_mix(Dataset):
 
         # instructions
         data['text'] = label['texts'][0]
-
+        
         # stack tokens of multi-view
         # NOTE: Here we can easily define more or less views for condition
         compressed_size = self.args.width//self.args.vae_compression_rate
@@ -214,6 +227,9 @@ class Dataset_mix(Dataset):
 
             if self.args.use_hand_mask:
                 data['hand_mask'] = self._get_hand_mask(label, rgb_id, cond_cam_id, pre_encode=True, video_dir=dataset_dir).float()
+            
+            if self.args.action_encoder == "dino_visual":
+                data['visual_actions'] = self._load_segmentation_video_and_normalize(label, rgb_id, cond_cam_id, video_dir=dataset_dir).float()
 
         elif self.args.num_views == 2:
             cond_cam_id1 = 0

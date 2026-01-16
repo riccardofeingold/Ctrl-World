@@ -37,6 +37,11 @@ class wm_orca_args:
     use_only_ee_pose_actions: bool = False
     use_average_scalar_hand_action: bool = False
 
+    # action encoder parameters
+    action_encoder: str = "dino_visual"
+    hub_dir: str = "/data/hub"
+    dinov2_size: int = 224
+
     # compression rate of VAE
     vae_compression_rate: int = 8
 

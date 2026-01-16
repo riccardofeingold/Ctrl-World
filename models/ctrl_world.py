@@ -113,6 +113,109 @@ class Action_encoder2(nn.Module):
         return action # (B, 1, hidden_size) or (B, T, hidden_size) if frame_level_cond
 
 
+class DinoV2VisualActionEncoder(nn.Module):
+    # it takes a sequnce of RGB frames which represent the segmentation of the hand. (B, T, C, H, W)
+    def __init__(self, num_in_channels=3, embed_dim=1024, hub_dir="/data/hub", dinov2_size=224):
+        super().__init__()
+        
+        # Set custom directory for torch.hub cache if provided
+        if hub_dir is not None:
+            torch.hub.set_dir(hub_dir)
+        
+        # Pretrained spatial encoder (frozen)
+        self.spatial_backbone = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+        for param in self.spatial_backbone.parameters():
+            param.requires_grad = False
+        
+        # DINOv2 requires input size divisible by patch size (14)
+        # Common sizes: 224 (224/14=16), 280 (280/14=20), 392 (392/14=28)
+        assert dinov2_size % 14 == 0, f"dinov2_size must be divisible by 14 (patch size), got {dinov2_size}"
+        self.dinov2_size = dinov2_size
+        
+        # Trainable task-specific adapter with learnable downsampling
+        # Input: (B, num_in_channels, H, W) -> Output: (B, 3, dinov2_size, dinov2_size)
+        # Strategy: Use learnable convolutions to downsample to target size
+        # The adapter learns features at multiple scales, then adjusts to target size
+        
+        # Calculate kernel size for final size adjustment (for common case of 256->224)
+        # Formula: output_size = (input_size - kernel_size + 2*padding) / stride + 1
+        # For 256->224 with stride=1, padding=0: kernel_size = 256 - 224 + 1 = 33
+        # We'll use this for the expected input size, but handle variable sizes in forward
+        expected_input_size = 256  # Common case
+        if expected_input_size > dinov2_size:
+            final_kernel_size = expected_input_size - dinov2_size + 1
+        else:
+            final_kernel_size = 1
+        
+        self.seg_adapter = nn.Sequential(
+            # First conv: channel transformation
+            nn.Conv2d(num_in_channels, 64, 3, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.SiLU(),
+            # Learnable downsampling: use strided conv to reduce spatial size
+            nn.Conv2d(64, 64, 3, stride=2, padding=1),  # H/2, W/2 (e.g., 256 -> 128)
+            nn.GroupNorm(8, 64),
+            nn.SiLU(),
+            # Learnable upsampling: transposed conv to get back to larger size
+            nn.ConvTranspose2d(64, 64, kernel_size=4, stride=2, padding=1),  # 128 -> 256
+            nn.GroupNorm(8, 64),
+            nn.SiLU(),
+            # Final channel reduction to num_in_channels
+            nn.Conv2d(64, num_in_channels, 1),
+        )
+        
+        # Learnable size adjustment layer (applied conditionally in forward)
+        # For 256->224: kernel_size=33, stride=1, padding=0 gives (256-33+1)=224
+        if final_kernel_size > 1:
+            self.size_adjust_conv = nn.Conv2d(num_in_channels, num_in_channels, kernel_size=final_kernel_size, stride=1, padding=0)
+        else:
+            self.size_adjust_conv = None
+        
+        # Trainable temporal reasoning module
+        self.temporal_module = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=768, nhead=8, dim_feedforward=2048),
+            num_layers=2
+        )
+        
+        # Trainable projection
+        self.proj = nn.Linear(768, embed_dim)
+    
+    def forward(self, seg_sequence):
+        B, T, C, H, W = seg_sequence.shape
+        
+        # Extract spatial features with frozen DINOv2
+        spatial_feats = []
+        for t in range(T):
+            x = self.seg_adapter(seg_sequence[:, t])  # (B, 3, H, W) - after adapter, size is back to ~HxW
+            
+            # Apply learnable size adjustment if available (for exact size matching)
+            if self.size_adjust_conv is not None and x.shape[2] == H and x.shape[3] == W:
+                # Use learnable conv to adjust size (e.g., 256 -> 224)
+                x = self.size_adjust_conv(x)  # (B, 3, dinov2_size, dinov2_size)
+            elif x.shape[2] != self.dinov2_size or x.shape[3] != self.dinov2_size:
+                # Fallback to interpolation if size doesn't match (for variable input sizes)
+                x = torch.nn.functional.interpolate(
+                    x, 
+                    size=(self.dinov2_size, self.dinov2_size), 
+                    mode='bilinear', 
+                    align_corners=False
+                )  # (B, 3, dinov2_size, dinov2_size)
+            
+            feat = self.spatial_backbone(x)
+            spatial_feats.append(feat)
+        
+        spatial_feats = torch.stack(spatial_feats, dim=1)  # [B, T, 768]
+        
+        # Learn temporal patterns
+        spatial_feats = spatial_feats.transpose(0, 1)  # [T, B, 768]
+        temporal_feats = self.temporal_module(spatial_feats)
+        temporal_feats = temporal_feats.transpose(0, 1)  # [B, T, 768]
+        
+        # Project to output
+        output = self.proj(temporal_feats)
+        
+        return output
+
 class CrtlWorld(nn.Module):
     def __init__(self, args):
         super(CrtlWorld, self).__init__()
@@ -145,9 +248,11 @@ class CrtlWorld(nn.Module):
         self.text_encoder.requires_grad_(False)
 
         # initialize an action projector
-        self.action_encoder = Action_encoder2(action_dim=args.action_dim, action_num=int(args.num_history+args.num_frames), hidden_sizes=args.action_encoder_hidden_dims, text_cond=args.text_cond)
+        if args.action_encoder == "dino_visual":
+            self.action_encoder = DinoV2VisualActionEncoder(num_in_channels=3, embed_dim=1024)
+        else:
+            self.action_encoder = Action_encoder2(action_dim=args.action_dim, action_num=int(args.num_history+args.num_frames), hidden_sizes=args.action_encoder_hidden_dims, text_cond=args.text_cond)
 
-    
 
     def forward(self, batch):
         latents = batch['latent'] # (B, 16, 4, 32, 32)
@@ -177,7 +282,14 @@ class CrtlWorld(nn.Module):
         # action condition
         action = batch['action'] # (B, f, 7)
         action = action.to(device)
-        action_hidden = self.action_encoder(action, texts, self.tokenizer, self.text_encoder, frame_level_cond=self.args.frame_level_cond) # (B, f, 1024)
+        if self.args.action_encoder == "dino_visual":
+            visual_actions = batch['visual_actions'] # (B, T, 3, 256, 256)
+            visual_actions = visual_actions.to(device)
+            action_hidden = self.action_encoder(visual_actions) # (B, T, 1024)
+            action_hidden = action_hidden.to(device)
+        else:
+            action_hidden = self.action_encoder(action, texts, self.tokenizer, self.text_encoder, frame_level_cond=self.args.frame_level_cond) # (B, f, 1024)
+            action_hidden = action_hidden.to(device)
 
         # for classifier-free guidance, with 5% probability, set action_hidden to 0
         uncond_hidden_states = torch.zeros_like(action_hidden)

@@ -194,6 +194,7 @@ def main_val(args):
 def validate_video_generation(model, val_dataset, args, train_steps, videos_dir, id, accelerator, load_from_dataset=True):
     device = accelerator.device
     pipeline = model.module.pipeline if accelerator.num_processes > 1 else model.pipeline
+    acc_model = model.module if accelerator.num_processes > 1 else model
     videos_row = args.video_num if not args.debug else 1
     videos_col = args.num_validation_batch
 
@@ -204,23 +205,42 @@ def validate_video_generation(model, val_dataset, args, train_steps, videos_dir,
     batch_list = [val_dataset.__getitem__(id) for id in batch_id]
     video_gt = torch.cat([t['latent'].unsqueeze(0) for i,t in enumerate(batch_list)],dim=0).to(device, non_blocking=True)
     text = [t['text'] for i,t in enumerate(batch_list)]
-    actions = torch.cat([t['action'].unsqueeze(0) for i,t in enumerate(batch_list)],dim=0).to(device, non_blocking=True)
+    if args.action_encoder == "dino_visual":
+        visual_actions = torch.cat([t['visual_actions'].unsqueeze(0) for i,t in enumerate(batch_list)],dim=0).to(device, non_blocking=True)
+    else:
+        actions = torch.cat([t['action'].unsqueeze(0) for i,t in enumerate(batch_list)],dim=0).to(device, non_blocking=True)
     his_latent_gt, future_latent_ft = video_gt[:,:args.num_history], video_gt[:,args.num_history:]
     current_latent = future_latent_ft[:,0]
-    print("image",current_latent.shape, 'action', actions.shape)
+
+    if args.action_encoder == "dino_visual":
+        print("visual_actions",visual_actions.shape)
+    else:
+        print("actions",actions.shape)
+
     if args.num_views == 1:
         assert  current_latent.shape[1:] == (4, 32, 32)
     elif args.num_views == 2:
         assert current_latent.shape[1:] == (4, 64, 32)
     else:
         assert current_latent.shape[1:] == (4, 96, 32)
-    assert actions.shape[1:] == (int(args.num_frames+args.num_history), args.action_dim)
+    
+    if args.action_encoder == "dino_visual":
+        assert visual_actions.shape[1:] == (int(args.num_frames+args.num_history), 3, 256, 256)
+    else:
+        assert actions.shape[1:] == (int(args.num_frames+args.num_history), args.action_dim)
 
     # start generate
     with torch.no_grad():
-        bsz = actions.shape[0]
-        action_latent = model.module.action_encoder(actions, text, model.module.tokenizer, model.module.text_encoder, args.frame_level_cond) if accelerator.num_processes > 1 else model.action_encoder(actions, text, model.tokenizer, model.text_encoder,args.frame_level_cond) # (8, 1, 1024)
-        print("action_latent",action_latent.shape)
+        if args.action_encoder == "dino_visual":
+            bsz = visual_actions.shape[0]
+        else:
+            bsz = actions.shape[0]
+        if args.action_encoder == "dino_visual":
+            action_hidden = acc_model.action_encoder(visual_actions) # (B, T, 1024)
+            action_latent = action_hidden.to(device)
+        else:
+            action_latent = acc_model.action_encoder(actions, text, acc_model.tokenizer, acc_model.text_encoder, args.frame_level_cond) # (8, 1, 1024)
+            print("action_latent",action_latent.shape)
 
         _, pred_latents = CtrlWorldDiffusionPipeline.__call__(
             pipeline,

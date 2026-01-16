@@ -3,7 +3,7 @@
 experiment:
   experiment_name: "weighted_hand_test_moving_finger_but_fixed_ee_no_weight"
   experiment_description: "Training with higher hand weight, moving finger but fixed end-effector"
-  base_config: "../base_config.yaml"  # Reference to base config
+  base_config: "../../base_config.yaml"  # Reference to base config
   
 # Override base config parameters
 training:
