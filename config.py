@@ -37,6 +37,9 @@ class wm_orca_args:
     use_only_ee_pose_actions: bool = False
     use_average_scalar_hand_action: bool = False
 
+    encode_segmentation_with_svd: bool = False
+    predicted_datatype: str = "latent_segmentation" # "latent_segmentation" or "latent_rgb" or "rgb" or "segmentation" or "depth" or "optical_flow"
+
     # action encoder parameters
     action_encoder: str = "dino_visual"
     hub_dir: str = "/data/hub"

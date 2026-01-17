@@ -93,15 +93,17 @@ class Dataset_mix(Dataset):
         # directly load videos latent after svd-vae encoder
         assert cam_id is not None
         assert pre_encode == True
+
         if pre_encode: 
-            video_path = label['latent_videos'][cam_id]['latent_video_path']
+            video_path = label[self.args.predicted_datatype][cam_id]['latent_video_path']
             video_path = os.path.join(video_dir,video_path)
-            try:
-                frames = self._load_latent_video(video_path, frame_ids)
-            except Exception as e:
-                print(f"Error loading video from {video_path}: {e}")
-                video_path = video_path.replace("latent_videos", "latent_videos_svd")
-                frames = self._load_latent_video(video_path, frame_ids)
+            frames = self._load_latent_video(video_path, frame_ids)
+        else:
+            video_path = label[self.args.predicted_datatype][cam_id]['video_path']
+            video = mediapy.read_video(os.path.join(video_dir, video_path)) 
+            frames = torch.tensor(video).permute(0, 3, 1, 2).float() / 255.0*2-1
+            frames = frames[frame_ids]
+
         return frames
     
     def _get_hand_mask(self, label, frame_ids, cam_id, pre_encode, video_dir):
@@ -222,6 +224,8 @@ class Dataset_mix(Dataset):
         compressed_size = self.args.width//self.args.vae_compression_rate
         if self.args.num_views == 1:
             cond_cam_id = 0 if self.args.only_wrist_view==False else 2
+            
+            # get the latent main datatype: Can be latent_segmentation or latent_rgb
             latnt_cond,_ = self._get_obs(label, rgb_id, cond_cam_id, pre_encode=True, video_dir=dataset_dir)
             data['latent'] = latnt_cond.float()
 
@@ -230,7 +234,7 @@ class Dataset_mix(Dataset):
             
             if self.args.action_encoder == "dino_visual":
                 data['visual_actions'] = self._load_segmentation_video_and_normalize(label, rgb_id, cond_cam_id, video_dir=dataset_dir).float()
-
+            
         elif self.args.num_views == 2:
             cond_cam_id1 = 0
             cond_cam_id2 = 2 # wrist view

@@ -1,15 +1,16 @@
 # Base configuration that all experiments inherit from
 # Experiment: 10fps with hand mask
 experiment:
-  experiment_name: ""
-  experiment_description: ""
+  experiment_name: "hand_mask_prediction_using_relative_ee_joint_fingers"
+  experiment_description: "Predicting hand mask using relative end-effector and joint fingers"
+  base_config: "../base_config.yaml"  # Reference to base config
   
 # Override base config parameters
 training:
-  tag: ""
+  tag: "hand_mask_prediction_using_relative_ee_joint_fingers"
   output_dir: "model_ckpt/${training.tag}"
   wandb_run_name: "${experiment.experiment_name}_${training.tag}"
-  wandb_project_name: ""
+  wandb_project_name: "hand_mask_prediction_tests"
   
   debug: false
   learning_rate: 1e-5
@@ -26,9 +27,10 @@ training:
   video_num: 4
   num_validation_batch: 2
 
+
 dataset:
-  dataset_root_path: ""
-  dataset_names: ""
+  dataset_root_path: "datasets/2026-01-16T15-34-02"
+  dataset_names: "data_working_hand_mask_sine_hand_motions_10fps"
   dataset_meta_info_path: "dataset_meta_info"
   dataset_cfgs: ${dataset.dataset_names}  # Reference from dataset section
   annotation_name: "annotation"
@@ -43,8 +45,8 @@ dataset:
   use_only_hand_actions: false
   use_only_ee_pose_actions: false
   use_average_scalar_hand_action: false
-  encode_segmentation_with_svd: false
-  predicted_datatype: "latent_videos" # "latent_videos" or "latent_segmentation_videos" or "videos" or "segmentation_videos" or "depth" or "optical_flow"
+
+  predicted_datatype: "latent_segmentation_videos" # "latent_videos" or "latent_segmentation_videos" or "rgb" or "segmentation" or "depth" or "optical_flow"
 
 model:
   # Model paths
@@ -54,7 +56,7 @@ model:
   pi_ckpt: null  # Policy checkpoint for rollout (not needed for training)
   
   # Model architecture
-  action_encoder: "dino_visual"
+  action_encoder: null
   hub_dir: "/data/hub"
   dinov2_size: 224
 
@@ -69,14 +71,14 @@ model:
   
   # Training/inference settings
   dtype: "bfloat16"  # Options: "float32", "float16", "bfloat16"
-  hand_weight: 2.5
+  hand_weight: 1.0
   motion_bucket_id: 127
   guidance_scale: 2.0
   num_inference_steps: 50
-  decode_chunk_size: 5
+  decode_chunk_size: 10
   
   # Frame dimensions
   width: 256
   height: 256
-  num_frames: 5
-  num_history: 5
+  num_frames: 10
+  num_history: 10

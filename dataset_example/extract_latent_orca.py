@@ -104,7 +104,7 @@ class EncodeLatentDataset(Dataset):
             f'{self.old_path}/videos/{traj_id}/0_segmentation.mp4',
             f'{self.old_path}/videos/{traj_id}/1_segmentation.mp4',
             f'{self.old_path}/videos/{traj_id}/2_segmentation.mp4',
-        ] if self.args.use_hand_mask else None
+        ]
 
         traj_info = {'success': success,
                      'observation.state.cartesian_position': obs_car,
@@ -124,7 +124,7 @@ class EncodeLatentDataset(Dataset):
     
         return 0
 
-    def downsample_binary_mask(self, video_id, seg_video_path, data_type, save_root, traj_id, rgb_skip, target_height, target_width):
+    def downsample_binary_mask(self, video_id, seg_video_path, data_type, save_root, traj_id, rgb_skip, target_height, target_width, folder_name='downsampled_binary_masks'):
         """
         Downsample a binary mask to the target height and width using nearest neighbor interpolation.
         
@@ -138,9 +138,6 @@ class EncodeLatentDataset(Dataset):
             Downsampled mask tensor of shape (B, 1, target_height, target_width)
         """
         seg_video = mediapy.read_video(seg_video_path)
-        # save the video to the new folder
-        os.makedirs(f"{save_root}/segmentation_videos/{data_type}/{traj_id}", exist_ok=True)
-        mediapy.write_video(f"{save_root}/segmentation_videos/{data_type}/{traj_id}/{video_id}.mp4", seg_video[::rgb_skip], fps=self.args.original_fps / self.args.down_sample)
 
         mask = torch.tensor(seg_video).permute(0, 3, 1, 2)
         mask = torch.sum(mask, dim=-3)  # Keep only one channel for binary mask
@@ -171,15 +168,23 @@ class EncodeLatentDataset(Dataset):
             mode='nearest'
         )
 
-        os.makedirs(f"{save_root}/latent_segmentation_videos/{data_type}/{traj_id}", exist_ok=True)
-        torch.save(downsampled_mask, f"{save_root}/latent_segmentation_videos/{data_type}/{traj_id}/{video_id}.pt")
+        os.makedirs(f"{save_root}/{folder_name}/{data_type}/{traj_id}", exist_ok=True)
+        torch.save(downsampled_mask, f"{save_root}/{folder_name}/{data_type}/{traj_id}/{video_id}.pt")
 
         return len(mask)
         
-    def extract_rgb_latents(self, video_id, video_path, save_root, traj_id, data_type, size, rgb_skip, device):
+    def extract_rgb_latents(self, video_id, video_path, save_root, traj_id, data_type, size, rgb_skip, device, folder_name='latent_videos'):
         # load and resize video and save
         video = mediapy.read_video(video_path)
+
+        if "segmentation" in folder_name:
+            # save the video to the new folder
+            os.makedirs(f"{save_root}/segmentation_videos/{data_type}/{traj_id}", exist_ok=True)
+            mediapy.write_video(f"{save_root}/segmentation_videos/{data_type}/{traj_id}/{video_id}.mp4", video[::rgb_skip], fps=self.args.original_fps / self.args.down_sample)
+            print("segmentation video")
+
         frames = torch.tensor(video).permute(0, 3, 1, 2).float() / 255.0*2-1
+        print("frames shape: ", frames.shape)
         frames = frames[::rgb_skip]  # Skip frames to save memory here!!!
         x = torch.nn.functional.interpolate(frames, size=size, mode='bilinear', align_corners=False)
         resize_video = ((x / 2.0 + 0.5).clamp(0, 1)*255)
@@ -199,22 +204,22 @@ class EncodeLatentDataset(Dataset):
                 latent = vae_model.encode(batch).latent_dist.sample().mul_(vae_model.config.scaling_factor).cpu()
                 latents.append(latent)
             x = torch.cat(latents, dim=0)
-        os.makedirs(f"{save_root}/latent_videos/{data_type}/{traj_id}", exist_ok=True)
-        torch.save(x, f"{save_root}/latent_videos/{data_type}/{traj_id}/{video_id}.pt")
+        os.makedirs(f"{save_root}/{folder_name}/{data_type}/{traj_id}", exist_ok=True)
+        torch.save(x, f"{save_root}/{folder_name}/{data_type}/{traj_id}/{video_id}.pt")
         return len(frames)
     
     def process_traj(self, video_paths, seg_video_paths, traj_info, instruction, save_root,traj_id=0,data_type='val', size=(192,320), rgb_skip=3, device='cuda'):
-        if seg_video_paths is not None:
-            for video_id, (video_path, seg_video_path) in enumerate(zip(video_paths, seg_video_paths)):
-                # extract rgb latents using VAE
-                video_length = self.extract_rgb_latents(video_id, video_path, save_root, traj_id, data_type, size, rgb_skip, device)
+        for video_id, (video_path, seg_video_path) in enumerate(zip(video_paths, seg_video_paths)):
+            # extract rgb latents using VAE
+            video_length = self.extract_rgb_latents(video_id, video_path, save_root, traj_id, data_type, size, rgb_skip, device, folder_name='latent_videos')
 
-                # get downsample binary mask using interpolate
+            if self.args.encode_segmentation_with_svd:
+                self.extract_rgb_latents(video_id, seg_video_path, save_root, traj_id, data_type, size, rgb_skip, device, folder_name='latent_segmentation_videos')
+
+            # get downsample binary mask using interpolate
+            if self.args.use_hand_mask:
                 seg_length = self.downsample_binary_mask(video_id, seg_video_path, data_type, save_root, traj_id, rgb_skip, int(self.args.height / self.args.vae_compression_rate), int(self.args.width / self.args.vae_compression_rate))
                 assert seg_length == video_length
-        else:
-            for video_id, video_path in enumerate(video_paths):
-                video_length = self.extract_rgb_latents(video_id, video_path, save_root, traj_id, data_type, size, rgb_skip, device)
         
         # record cartesain aligned with video frames
         cartesian_pose = np.array(traj_info['observation.state.cartesian_position'])
@@ -273,6 +278,7 @@ if __name__ == "__main__":
     parser.add_argument('--svd_path', type=str, default='stabilityai/stable-video-diffusion-img2vid')
     parser.add_argument('--frame_size', type=parse_tuple, default=(256, 256))
     parser.add_argument('--use_hand_mask', action='store_true')
+    parser.add_argument('--encode_segmentation_with_svd', type=bool, default=True)
     parser.add_argument('--val_ratio', type=float, default=0.3)
     # debug
     parser.add_argument('--debug', action='store_true')
@@ -282,6 +288,9 @@ if __name__ == "__main__":
 
     if args.use_hand_mask:
         wm_arguments.use_hand_mask = True
+
+    if args.encode_segmentation_with_svd:
+        wm_arguments.encode_segmentation_with_svd = True
 
     data_list = [
         {
